@@ -18,17 +18,17 @@ export default function Modal({ open, onClose, title, children }: ModalProps) {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="modal-content p-6 relative">
+      <div className="modal-content relative p-6">
         <button
           onClick={onClose}
-          className="absolute top-5 right-5 flex h-8 w-8 items-center justify-center rounded-full bg-line/50 text-ink-soft transition hover:bg-line hover:text-ink"
+          className="absolute right-5 top-5 flex h-8 w-8 items-center justify-center rounded-full bg-line/50 text-ink-soft transition hover:bg-line hover:text-ink"
           aria-label="Fechar"
           title="Fechar"
           type="button"
         >
           <X size={18} />
         </button>
-        {title && <h2 className="mb-4 text-xl font-bold">{title}</h2>}
+        {title && <h2 className="mb-4 pr-10 font-display text-xl font-bold text-ink">{title}</h2>}
         {children}
       </div>
     </div>

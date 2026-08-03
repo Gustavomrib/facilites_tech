@@ -1,24 +1,24 @@
 import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import {
-  MagnifyingGlass,
-  Camera,
-  ShoppingCartSimple,
-  CheckCircle,
-  Money,
-  QrCode,
-  CreditCard,
   BookBookmark,
+  Camera,
+  Check,
+  CheckCircle,
+  CreditCard,
+  MagnifyingGlass,
+  Minus,
+  Money,
+  Plus,
+  QrCode,
+  ShoppingCartSimple,
   Trash,
   UserCirclePlus,
-  Check,
-  LockKey,
-  WarningCircle,
+  type Icon,
 } from '@phosphor-icons/react';
 import { useAppData } from '../context/AppDataContext';
-import { formatCurrency, parseMoney, sanitizeIntegerInput, sanitizeMoneyInput } from '../lib/format';
+import { ApiError } from '../api/httpClient';
+import { formatCurrency, parseMoney, todayISO } from '../lib/format';
 import type { Cliente, FormaPagamento } from '../types';
-import Modal from '../components/Modal';
 
 interface ItemCarrinho {
   key: string;
@@ -28,49 +28,33 @@ interface ItemCarrinho {
   valorUnitario: number;
 }
 
-interface ConfirmacaoCobranca {
-  total: number;
-  forma: FormaPagamento;
-  quantidadeItens: number;
-  cliente?: string;
-}
-
-const FORMAS: { forma: FormaPagamento; label: string; Icon: typeof Money; classes: string }[] = [
-  { forma: 'dinheiro', label: 'Dinheiro', Icon: Money, classes: 'bg-line/50 text-ink' },
-  { forma: 'pix', label: 'Pix', Icon: QrCode, classes: 'bg-ledger/15 text-ledger-strong dark:text-ledger' },
-  { forma: 'cartao_credito', label: 'Cartão', Icon: CreditCard, classes: 'bg-line/50 text-ink' },
-  { forma: 'fiado', label: 'Fiado', Icon: BookBookmark, classes: 'bg-brass/15 text-brass' },
+const FORMAS: { forma: FormaPagamento; label: string; Icon: Icon; classes: string }[] = [
+  { forma: 'dinheiro', label: 'Dinheiro', Icon: Money, classes: 'bg-gray-100 text-gray-700 dark:bg-slate-700 dark:text-slate-300' },
+  { forma: 'pix', label: 'Pix', Icon: QrCode, classes: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' },
+  { forma: 'cartao_credito', label: 'Cartão', Icon: CreditCard, classes: 'bg-gray-100 text-gray-700 dark:bg-slate-700 dark:text-slate-300' },
+  { forma: 'fiado', label: 'Fiado', Icon: BookBookmark, classes: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' },
 ];
 
 export default function Caixa() {
-  const navigate = useNavigate();
-  const {
-    data,
-    registrarVendaNoBanco,
-    cadastrarClienteNoBanco,
-    abrirCaixa,
-  } = useAppData();
+  const { data, addVenda, addCliente } = useAppData();
+  const controlaEstoque = data.config?.controlaEstoque ?? true;
   const [busca, setBusca] = useState('');
-  const [quantidadeProduto, setQuantidadeProduto] = useState('1');
   const [valorAvulso, setValorAvulso] = useState('');
   const [carrinho, setCarrinho] = useState<ItemCarrinho[]>([]);
   const [formaSelecionada, setFormaSelecionada] = useState<FormaPagamento | null>(null);
-
   const [clienteSelecionado, setClienteSelecionado] = useState<Cliente | null>(null);
   const [buscaCliente, setBuscaCliente] = useState('');
   const [novoClienteNome, setNovoClienteNome] = useState('');
   const [novoClienteTelefone, setNovoClienteTelefone] = useState('');
   const [cadastrandoCliente, setCadastrandoCliente] = useState(false);
-  const [confirmacaoCobranca, setConfirmacaoCobranca] = useState<ConfirmacaoCobranca | null>(null);
-  const [salvando, setSalvando] = useState(false);
-  const [erroOperacao, setErroOperacao] = useState<string | null>(null);
-  const [modalAbertura, setModalAbertura] = useState(false);
-  const [valorInicial, setValorInicial] = useState('');
+  const [finalizando, setFinalizando] = useState(false);
 
   const resultados = useMemo(() => {
     if (!busca.trim()) return [];
     const termo = busca.trim().toLowerCase();
-    return data.produtos.filter((p) => p.nome.toLowerCase().includes(termo)).slice(0, 6);
+    return data.produtos
+      .filter((p) => p.nome.toLowerCase().includes(termo) || (p.codigo ?? '').toLowerCase().includes(termo))
+      .slice(0, 6);
   }, [busca, data.produtos]);
 
   const clientesFiltrados = useMemo(() => {
@@ -80,30 +64,24 @@ export default function Caixa() {
   }, [buscaCliente, data.clientes]);
 
   const total = carrinho.reduce((sum, item) => sum + item.quantidade * item.valorUnitario, 0);
-  const valorAvulsoValido = parseMoney(valorAvulso) > 0;
-  const quantidadeProdutoSelecionada = Math.max(1, Number(quantidadeProduto) || 1);
 
   const adicionarProduto = (produtoId: string) => {
     const produto = data.produtos.find((p) => p.id === produtoId);
     if (!produto) return;
 
-    const jaNoCarrinho = carrinho.find((i) => i.produtoId === produtoId)?.quantidade ?? 0;
-    if (
-      produto.type === 'product' &&
-      jaNoCarrinho + quantidadeProdutoSelecionada > (produto.quantidade ?? 0)
-    ) {
-      alert(`Estoque insuficiente: só há ${produto.quantidade ?? 0} unidade(s) de "${produto.nome}" disponível.`);
-      return;
+    const rastreiaEstoque = controlaEstoque && produto.tipo !== 'servico';
+    if (rastreiaEstoque) {
+      const jaNoCarrinho = carrinho.find((i) => i.produtoId === produtoId)?.quantidade ?? 0;
+      if (jaNoCarrinho + 1 > produto.quantidade) {
+        alert(`Estoque insuficiente: só há ${produto.quantidade} unidade(s) de "${produto.nome}" disponível.`);
+        return;
+      }
     }
 
     setCarrinho((prev) => {
       const existente = prev.find((i) => i.produtoId === produtoId);
       if (existente) {
-        return prev.map((i) =>
-          i.produtoId === produtoId
-            ? { ...i, quantidade: i.quantidade + quantidadeProdutoSelecionada }
-            : i,
-        );
+        return prev.map((i) => (i.produtoId === produtoId ? { ...i, quantidade: i.quantidade + 1 } : i));
       }
       return [
         ...prev,
@@ -111,13 +89,12 @@ export default function Caixa() {
           key: produto.id,
           produtoId: produto.id,
           descricao: produto.nome,
-          quantidade: quantidadeProdutoSelecionada,
+          quantidade: 1,
           valorUnitario: produto.precoVenda,
         },
       ];
     });
     setBusca('');
-    setQuantidadeProduto('1');
   };
 
   const adicionarAvulso = () => {
@@ -130,13 +107,23 @@ export default function Caixa() {
     setValorAvulso('');
   };
 
-  const removerItem = (key: string) => {
-    setCarrinho((prev) => prev.filter((i) => i.key !== key));
-  };
-
-  const lerCodigo = () => {
-    // TODO: integração real fica para versão futura com backend
-    alert('Leitura de código de barras simulada — nenhum scanner real conectado.');
+  const definirQuantidade = (key: string, quantidadeDesejada: number) => {
+    setCarrinho((prev) =>
+      prev.map((item) => {
+        if (item.key !== key) return item;
+        let nova = Number.isFinite(quantidadeDesejada) ? Math.floor(quantidadeDesejada) : item.quantidade;
+        nova = Math.max(1, nova);
+        if (item.produtoId) {
+          const produto = data.produtos.find((p) => p.id === item.produtoId);
+          const rastreiaEstoque = controlaEstoque && produto?.tipo !== 'servico';
+          if (rastreiaEstoque && produto && nova > produto.quantidade) {
+            alert(`Estoque insuficiente: só há ${produto.quantidade} unidade(s) de "${item.descricao}" disponível.`);
+            nova = Math.max(1, produto.quantidade);
+          }
+        }
+        return { ...item, quantidade: nova };
+      }),
+    );
   };
 
   const selecionarForma = (forma: FormaPagamento) => {
@@ -149,10 +136,8 @@ export default function Caixa() {
 
   const cadastrarCliente = async () => {
     if (!novoClienteNome.trim()) return;
-    setSalvando(true);
-    setErroOperacao(null);
     try {
-      const cliente = await cadastrarClienteNoBanco({
+      const cliente = await addCliente({
         nome: novoClienteNome.trim(),
         telefone: novoClienteTelefone.trim() || undefined,
       });
@@ -160,18 +145,14 @@ export default function Caixa() {
       setCadastrandoCliente(false);
       setNovoClienteNome('');
       setNovoClienteTelefone('');
-    } catch (error) {
-      setErroOperacao(error instanceof Error ? error.message : 'Não foi possível cadastrar o cliente.');
-    } finally {
-      setSalvando(false);
+    } catch (err) {
+      alert(err instanceof ApiError ? err.message : 'Não foi possível cadastrar o cliente.');
     }
   };
 
   const finalizarVenda = async () => {
     if (!podeFinalizar) return;
 
-    // reconfere contra o estoque atual — protege contra edições no Estoque
-    // feitas depois que o item já estava no carrinho
     for (const item of carrinho) {
       if (item.quantidade <= 0 || item.valorUnitario <= 0) {
         alert('Item de venda inválido: quantidade e valor precisam ser maiores que zero.');
@@ -179,262 +160,175 @@ export default function Caixa() {
       }
       if (item.produtoId) {
         const produtoAtual = data.produtos.find((p) => p.id === item.produtoId);
-        if (
-          produtoAtual &&
-          produtoAtual.type === 'product' &&
-          (produtoAtual.quantidade ?? 0) < item.quantidade
-        ) {
+        const rastreiaEstoque = controlaEstoque && produtoAtual?.tipo !== 'servico';
+        if (rastreiaEstoque && (!produtoAtual || produtoAtual.quantidade < item.quantidade)) {
           alert(
-            `Estoque insuficiente: só há ${produtoAtual.quantidade ?? 0} unidade(s) de "${item.descricao}" disponível.`,
+            `Estoque insuficiente: só há ${produtoAtual?.quantidade ?? 0} unidade(s) de "${item.descricao}" disponível.`,
           );
           return;
         }
       }
     }
 
-    const formaCobranca = formaSelecionada!;
-    const confirmacao: ConfirmacaoCobranca = {
-      total,
-      forma: formaCobranca,
-      quantidadeItens: carrinho.reduce((quantidade, item) => quantidade + item.quantidade, 0),
-      cliente: clienteSelecionado?.nome,
-    };
-    setSalvando(true);
-    setErroOperacao(null);
+    const hoje = todayISO();
+    setFinalizando(true);
     try {
-      await registrarVendaNoBanco(
-        carrinho.map((item) => ({
-          productId: item.produtoId,
-          description: item.descricao,
-          quantity: item.quantidade,
-          unitPrice: item.valorUnitario,
-        })),
-        formaCobranca,
-        formaCobranca === 'fiado' ? clienteSelecionado?.id : undefined,
-      );
+      for (const item of carrinho) {
+        await addVenda(
+          {
+            data: hoje,
+            descricao: item.descricao,
+            quantidade: item.quantidade,
+            valorUnitario: item.valorUnitario,
+            formaPagamento: formaSelecionada!,
+            produtoId: item.produtoId,
+          },
+          formaSelecionada === 'fiado' && clienteSelecionado ? { clienteId: clienteSelecionado.id } : undefined,
+        );
+      }
       setCarrinho([]);
       setFormaSelecionada(null);
       setClienteSelecionado(null);
-      setConfirmacaoCobranca(confirmacao);
-    } catch (error) {
-      setErroOperacao(error instanceof Error ? error.message : 'Não foi possível registrar a venda.');
+      alert('Venda registrada com sucesso!');
+    } catch (err) {
+      alert(err instanceof ApiError ? err.message : 'Não foi possível registrar a venda.');
     } finally {
-      setSalvando(false);
-    }
-  };
-
-  const abrirNovoCaixa = async () => {
-    const inicial = valorInicial.trim() ? parseMoney(valorInicial) : 0;
-    if (!Number.isFinite(inicial) || inicial < 0) return;
-    setSalvando(true);
-    setErroOperacao(null);
-    try {
-      await abrirCaixa(inicial);
-      setModalAbertura(false);
-      setValorInicial('');
-    } catch (error) {
-      setErroOperacao(error instanceof Error ? error.message : 'Não foi possível abrir o caixa.');
-    } finally {
-      setSalvando(false);
+      setFinalizando(false);
     }
   };
 
   const precisaCliente = formaSelecionada === 'fiado';
   const podeFinalizar =
-    data.caixaAtual !== null && !salvando && carrinho.length > 0 && formaSelecionada !== null && (!precisaCliente || clienteSelecionado !== null);
-  const caixa = data.caixaAtual;
+    !finalizando &&
+    carrinho.length > 0 &&
+    formaSelecionada !== null &&
+    (!precisaCliente || clienteSelecionado !== null);
 
   return (
     <div className="fade-in">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <h2 className="font-display text-xl font-bold">Frente de Caixa</h2>
-        <div className="flex items-center gap-3">
-          {caixa ? (
-            <button
-              onClick={() => navigate('/caixa/fechamento')}
-              className="flex items-center gap-1 text-sm font-semibold text-stamp"
-            >
-              <LockKey size={18} /> Fechar Caixa
-            </button>
-          ) : (
-            <button
-              onClick={() => {
-                setErroOperacao(null);
-                setModalAbertura(true);
-              }}
-              className="flex items-center gap-1 text-sm font-semibold text-ledger-strong dark:text-ledger"
-            >
-              <Money size={18} /> Abrir Caixa
-            </button>
-          )}
-          <button
-            onClick={lerCodigo}
-            disabled={!caixa}
-            className="hidden items-center gap-1 text-sm font-medium text-ledger-strong disabled:opacity-40 dark:text-ledger sm:flex"
-          >
-            <Camera size={18} /> Ler Código
-          </button>
-        </div>
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="text-xl font-bold text-gray-800 dark:text-slate-100">Frente de Caixa</h2>
+        <button
+          onClick={() => alert('Leitura de código de barras simulada — nenhum scanner real conectado.')}
+          className="flex items-center gap-1 text-sm font-medium text-blue-600 dark:text-blue-400"
+        >
+          <Camera size={18} /> Ler Código
+        </button>
       </div>
 
-      {caixa ? (
-        <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-ledger/20 bg-ledger/5 px-3 py-2 text-xs">
-          <span className="font-semibold text-ledger-strong dark:text-ledger">Caixa aberto</span>
-          <span className="font-ledger text-ink-soft">Inicial: {formatCurrency(caixa.valorInicial)}</span>
-        </div>
-      ) : (
-        <div className="mb-3 rounded-xl border border-brass/30 bg-brass/10 p-3 text-sm text-ink">
-          <p className="font-semibold text-brass">O caixa está fechado.</p>
-          <p className="mt-1 text-xs text-ink-soft">Abra um novo caixa para registrar vendas e movimentações.</p>
-        </div>
-      )}
-
-      {erroOperacao && !modalAbertura && (
-        <div className="mb-3 flex items-start gap-2 rounded-xl bg-stamp/10 p-3 text-sm text-stamp">
-          <WarningCircle size={18} className="mt-0.5 shrink-0" /> {erroOperacao}
-        </div>
-      )}
-
-      <div className={`receipt-edge flex h-[60vh] flex-col rounded-2xl border border-line bg-paper-raised p-4 pb-6 shadow-sm lg:h-[65vh] ${!caixa ? 'pointer-events-none opacity-45' : ''}`}>
+      <div className="flex h-[60vh] flex-col rounded-2xl border border-gray-100 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
         <div className="relative mb-2">
-          <div className="grid grid-cols-[minmax(0,1fr)_68px] gap-2">
-            <div className="relative min-w-0">
-              <MagnifyingGlass size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-soft" />
-              <input
-                type="text"
-                value={busca}
-                onChange={(e) => setBusca(e.target.value)}
-                placeholder="Buscar produto..."
-                className="w-full rounded-xl border border-line bg-paper py-3 pl-10 pr-3 text-ink focus:border-transparent focus:outline-none focus:ring-2 focus:ring-ledger"
-              />
-            </div>
-            <label className="relative">
-              <span className="sr-only">Quantidade de unidades</span>
-              <input
-                type="text"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                value={quantidadeProduto}
-                onChange={(e) => setQuantidadeProduto(sanitizeIntegerInput(e.target.value))}
-                onBlur={() => {
-                  if (!quantidadeProduto || Number(quantidadeProduto) < 1) setQuantidadeProduto('1');
-                }}
-                aria-label="Quantidade de unidades"
-                className="w-full rounded-xl border border-line bg-paper py-3 pl-2 pr-7 text-center font-ledger text-sm font-bold tabular-nums text-ink focus:border-transparent focus:outline-none focus:ring-2 focus:ring-ledger"
-              />
-              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-bold uppercase text-ink-soft">
-                un.
-              </span>
-            </label>
-          </div>
+          <MagnifyingGlass size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-slate-500" />
+          <input
+            type="text"
+            value={busca}
+            onChange={(e) => setBusca(e.target.value)}
+            placeholder="Buscar produto por nome ou SKU..."
+            className="w-full rounded-xl border border-gray-200 bg-gray-50 py-3 pl-10 pr-4 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+          />
           {resultados.length > 0 && (
-            <div className="absolute z-10 mt-1 w-full rounded-xl border border-line bg-paper-raised shadow-lg">
-              {resultados.map((p) => {
-                const jaNoCarrinho = carrinho.find((item) => item.produtoId === p.id)?.quantidade ?? 0;
-                const estoque = p.quantidade ?? 0;
-                const estoqueInsuficiente =
-                  p.type === 'product' && jaNoCarrinho + quantidadeProdutoSelecionada > estoque;
-
-                return (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => adicionarProduto(p.id)}
-                    disabled={estoqueInsuficiente}
-                    className="flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-sm transition hover:bg-line/30 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <span className="min-w-0 truncate text-ink">
-                      {p.nome}{' '}
-                      <span className="font-ledger text-xs font-bold text-ink-soft">
-                        {p.type === 'product' ? `× ${estoque} un.` : '· Serviço'}
-                      </span>
-                    </span>
-                    <span className="shrink-0 text-right">
-                      <span className="block font-ledger text-ink-soft">{formatCurrency(p.precoVenda)}</span>
-                      {estoqueInsuficiente && (
-                        <span className="block text-[9px] font-semibold text-stamp">Estoque insuficiente</span>
-                      )}
-                    </span>
-                  </button>
-                );
-              })}
+            <div className="absolute z-10 mt-1 w-full rounded-xl border border-gray-100 bg-white shadow-lg dark:border-slate-600 dark:bg-slate-700">
+              {resultados.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => adicionarProduto(p.id)}
+                  className="flex w-full items-center justify-between px-4 py-2 text-left text-sm hover:bg-gray-50 dark:text-slate-100 dark:hover:bg-slate-600"
+                >
+                  <span>{p.nome}</span>
+                  <span className="text-gray-500 dark:text-slate-400">{formatCurrency(p.precoVenda)}</span>
+                </button>
+              ))}
             </div>
           )}
         </div>
 
-        <div className="mb-3 rounded-xl border border-line bg-paper p-2.5">
-          <div className="mb-2 flex items-center justify-between gap-3 px-0.5">
-            <span className="text-[10px] font-bold uppercase tracking-wide text-ink-soft">Venda avulsa</span>
-            <span className="text-[10px] text-ink-soft">Item sem cadastro</span>
-          </div>
-          <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-            <label className="relative min-w-0">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 border-r border-line pr-2 font-ledger text-sm font-bold text-ledger-strong dark:text-ledger">
-                R$
-              </span>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={valorAvulso}
-                onChange={(e) => setValorAvulso(sanitizeMoneyInput(e.target.value))}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') adicionarAvulso();
-                }}
-                placeholder="0,00"
-                aria-label="Valor da venda avulsa"
-                className="w-full rounded-xl border border-line bg-paper-raised py-2.5 pl-14 pr-3 font-ledger text-base font-bold tabular-nums text-ink placeholder:font-normal placeholder:text-ink-soft/70 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-ledger"
-              />
-            </label>
-            <button
-              type="button"
-              onClick={adicionarAvulso}
-              disabled={!valorAvulsoValido}
-              className="whitespace-nowrap rounded-xl bg-ledger px-4 text-sm font-bold text-paper shadow-sm transition hover:bg-ledger-strong disabled:cursor-not-allowed disabled:bg-line disabled:text-ink-soft disabled:shadow-none"
-            >
-              Adicionar
-            </button>
-          </div>
+        <div className="mb-2 flex gap-2">
+          <input
+            type="text"
+            inputMode="decimal"
+            value={valorAvulso}
+            onChange={(e) => setValorAvulso(e.target.value)}
+            placeholder="Ou digite um valor avulso"
+            className="w-full rounded-xl border border-gray-200 bg-gray-50 px-4 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+          />
+          <button
+            onClick={adicionarAvulso}
+            className="whitespace-nowrap rounded-xl bg-blue-50 px-3 text-sm font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
+          >
+            Adicionar
+          </button>
         </div>
 
-        <div className="mb-2 flex-1 overflow-y-auto border-b border-line pb-2">
+        <div className="mb-2 flex-1 overflow-y-auto border-b border-gray-100 pb-2 dark:border-slate-700">
           {carrinho.length === 0 ? (
-            <div className="flex h-full flex-col items-center justify-center text-ink-soft">
-              <ShoppingCartSimple size={40} className="mb-2 opacity-60" />
-              <p className="text-center text-sm">
-                Adicione produtos ou <br />
-                digite um valor avulso.
-              </p>
+            <div className="flex h-full flex-col items-center justify-center text-gray-400 dark:text-slate-500">
+              <ShoppingCartSimple size={40} className="mb-2 text-gray-300 dark:text-slate-600" />
+              <p className="text-center text-sm">Adicione produtos ou digite um valor avulso.</p>
             </div>
           ) : (
-            <ul className="divide-y divide-line">
-              {carrinho.map((item) => (
-                <li key={item.key} className="flex items-center justify-between gap-3 py-2">
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-ink">{item.descricao}</p>
-                    <p className="font-ledger text-xs text-ink-soft">
-                      {item.quantidade} un. × {formatCurrency(item.valorUnitario)}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-3">
-                    <span className="font-ledger text-sm font-bold tabular-nums text-ink">
-                      {formatCurrency(item.quantidade * item.valorUnitario)}
-                    </span>
-                    <button onClick={() => removerItem(item.key)} className="text-ink-soft hover:text-stamp">
-                      <Trash size={16} />
-                    </button>
-                  </div>
-                </li>
-              ))}
+            <ul className="divide-y divide-gray-100 dark:divide-slate-700">
+              {carrinho.map((item) => {
+                const produto = item.produtoId ? data.produtos.find((p) => p.id === item.produtoId) : undefined;
+                const rastreiaEstoque = controlaEstoque && produto?.tipo !== 'servico';
+                const noLimite = rastreiaEstoque && !!produto && item.quantidade >= produto.quantidade;
+                return (
+                  <li key={item.key} className="flex items-center justify-between py-2">
+                    <div>
+                      <p className="text-sm font-medium text-gray-800 dark:text-slate-100">{item.descricao}</p>
+                      <div className="mt-0.5 flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          aria-label={`Diminuir quantidade de ${item.descricao}`}
+                          onClick={() => definirQuantidade(item.key, item.quantidade - 1)}
+                          disabled={item.quantidade <= 1}
+                          className="flex h-5 w-5 items-center justify-center rounded border border-gray-200 text-gray-500 disabled:opacity-40 dark:border-slate-600 dark:text-slate-400"
+                        >
+                          <Minus size={10} weight="bold" />
+                        </button>
+                        <input
+                          type="number"
+                          min={1}
+                          aria-label={`Quantidade de ${item.descricao}`}
+                          value={item.quantidade}
+                          onChange={(e) => definirQuantidade(item.key, Number(e.target.value))}
+                          className="w-10 rounded border border-gray-200 bg-transparent px-1 text-center text-xs text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-slate-600 dark:text-slate-300"
+                        />
+                        <button
+                          type="button"
+                          aria-label={`Aumentar quantidade de ${item.descricao}`}
+                          onClick={() => definirQuantidade(item.key, item.quantidade + 1)}
+                          disabled={noLimite}
+                          className="flex h-5 w-5 items-center justify-center rounded border border-gray-200 text-gray-500 disabled:opacity-40 dark:border-slate-600 dark:text-slate-400"
+                        >
+                          <Plus size={10} weight="bold" />
+                        </button>
+                        <span className="text-xs text-gray-500 dark:text-slate-400">
+                          x {formatCurrency(item.valorUnitario)}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm font-bold text-gray-800 dark:text-slate-100">
+                        {formatCurrency(item.quantidade * item.valorUnitario)}
+                      </span>
+                      <button
+                        onClick={() => setCarrinho((prev) => prev.filter((i) => i.key !== item.key))}
+                        className="text-gray-400 hover:text-red-500 dark:text-slate-500 dark:hover:text-red-400"
+                      >
+                        <Trash size={16} />
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>
 
         <div className="mt-auto">
           <div className="mb-4 flex items-center justify-between">
-            <span className="font-medium text-ink-soft">Total a Pagar</span>
-            <span className="font-ledger text-2xl font-bold tabular-nums text-ledger-strong dark:text-ledger">
-              {formatCurrency(total)}
-            </span>
+            <span className="font-medium text-gray-600 dark:text-slate-300">Total a Pagar</span>
+            <span className="text-2xl font-bold text-blue-600 dark:text-blue-400">{formatCurrency(total)}</span>
           </div>
 
           <div className={`grid grid-cols-4 gap-2 ${carrinho.length === 0 ? 'pointer-events-none opacity-50' : ''}`}>
@@ -443,7 +337,7 @@ export default function Caixa() {
                 key={forma}
                 onClick={() => selecionarForma(forma)}
                 className={`flex flex-col items-center gap-1 rounded-lg py-2 text-xs font-medium ${classes} ${
-                  formaSelecionada === forma ? 'ring-2 ring-ledger' : ''
+                  formaSelecionada === forma ? 'ring-2 ring-blue-600' : ''
                 }`}
               >
                 <Icon size={18} /> {label}
@@ -452,16 +346,15 @@ export default function Caixa() {
           </div>
 
           {precisaCliente && (
-            <div className="fade-in mt-3 rounded-xl border border-brass/30 bg-brass/10 p-3">
+            <div className="fade-in mt-3 rounded-xl border border-orange-200 bg-orange-50 p-3 dark:border-orange-900/50 dark:bg-orange-900/20">
               {clienteSelecionado ? (
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-2 text-sm font-medium text-brass">
-                    <Check size={16} weight="bold" className="shrink-0" />
-                    <span className="min-w-0 truncate">{clienteSelecionado.nome}</span>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm font-medium text-orange-800 dark:text-orange-300">
+                    <Check size={16} weight="bold" /> {clienteSelecionado.nome}
                   </div>
                   <button
                     onClick={() => setClienteSelecionado(null)}
-                    className="shrink-0 text-xs font-medium text-brass underline"
+                    className="text-xs font-medium text-orange-700 underline dark:text-orange-300"
                   >
                     Trocar
                   </button>
@@ -474,48 +367,46 @@ export default function Caixa() {
                     value={novoClienteNome}
                     onChange={(e) => setNovoClienteNome(e.target.value)}
                     placeholder="Nome do cliente"
-                    className="w-full rounded-lg border border-line bg-paper p-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-ledger"
+                    className="w-full rounded-lg border border-gray-300 p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
                   />
                   <input
                     type="text"
                     value={novoClienteTelefone}
                     onChange={(e) => setNovoClienteTelefone(e.target.value)}
                     placeholder="Telefone (opcional)"
-                    className="w-full rounded-lg border border-line bg-paper p-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-ledger"
+                    className="w-full rounded-lg border border-gray-300 p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
                   />
                   <div className="flex gap-2">
                     <button
                       onClick={() => setCadastrandoCliente(false)}
-                      className="flex-1 rounded-lg bg-line/50 py-2 text-xs font-medium text-ink"
+                      className="flex-1 rounded-lg bg-gray-100 py-2 text-xs font-medium text-gray-600 dark:bg-slate-700 dark:text-slate-300"
                     >
                       Cancelar
                     </button>
-                    <button
-                      onClick={() => void cadastrarCliente()}
-                      disabled={salvando}
-                      className="flex-1 rounded-lg bg-brass py-2 text-xs font-bold text-paper"
-                    >
+                    <button onClick={cadastrarCliente} className="flex-1 rounded-lg bg-orange-600 py-2 text-xs font-bold text-white">
                       Cadastrar
                     </button>
                   </div>
                 </div>
               ) : (
                 <div className="space-y-2">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-brass">Quem é o cliente?</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-orange-700 dark:text-orange-300">
+                    Quem é o cliente?
+                  </p>
                   <input
                     type="text"
                     value={buscaCliente}
                     onChange={(e) => setBuscaCliente(e.target.value)}
                     placeholder="Buscar cliente cadastrado..."
-                    className="w-full rounded-lg border border-line bg-paper p-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-ledger"
+                    className="w-full rounded-lg border border-gray-300 p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
                   />
                   {clientesFiltrados.length > 0 && (
-                    <ul className="max-h-28 overflow-y-auto rounded-lg border border-line bg-paper-raised">
+                    <ul className="max-h-28 overflow-y-auto rounded-lg border border-gray-200 bg-white dark:border-slate-600 dark:bg-slate-700">
                       {clientesFiltrados.map((c) => (
                         <li key={c.id}>
                           <button
                             onClick={() => setClienteSelecionado(c)}
-                            className="w-full truncate px-3 py-2 text-left text-sm text-ink hover:bg-line/30"
+                            className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:text-slate-100 dark:hover:bg-slate-600"
                           >
                             {c.nome}
                           </button>
@@ -525,7 +416,7 @@ export default function Caixa() {
                   )}
                   <button
                     onClick={() => setCadastrandoCliente(true)}
-                    className="flex w-full items-center justify-center gap-1 rounded-lg border border-brass/40 py-2 text-xs font-medium text-brass"
+                    className="flex w-full items-center justify-center gap-1 rounded-lg border border-orange-300 py-2 text-xs font-medium text-orange-700 dark:border-orange-900/50 dark:text-orange-300"
                   >
                     <UserCirclePlus size={16} /> Cadastrar novo cliente
                   </button>
@@ -535,133 +426,16 @@ export default function Caixa() {
           )}
 
           <button
-            onClick={() => void finalizarVenda()}
+            onClick={finalizarVenda}
             disabled={!podeFinalizar}
-            className={`mt-3 flex w-full items-center justify-center gap-2 rounded-xl py-3.5 font-bold text-paper shadow-md transition active:scale-[0.98] ${
-              podeFinalizar ? 'bg-ledger hover:bg-ledger-strong' : 'cursor-not-allowed bg-ledger opacity-50'
+            className={`mt-3 flex w-full items-center justify-center gap-2 rounded-xl py-3.5 font-bold text-white shadow-md transition ${
+              podeFinalizar ? 'bg-blue-600 hover:bg-blue-700' : 'cursor-not-allowed bg-blue-600 opacity-50'
             }`}
           >
-            <CheckCircle size={20} /> {salvando ? 'Salvando…' : 'Cobrar'}
+            <CheckCircle size={20} /> {finalizando ? 'Registrando...' : 'Cobrar'}
           </button>
         </div>
       </div>
-
-      <Modal
-        open={confirmacaoCobranca !== null}
-        onClose={() => setConfirmacaoCobranca(null)}
-        title="Cobrança registrada"
-      >
-        {confirmacaoCobranca && (
-          <div className="space-y-5 text-center">
-            <div
-              className={`mx-auto flex h-16 w-16 items-center justify-center rounded-full ${
-                confirmacaoCobranca.forma === 'fiado'
-                  ? 'bg-brass/10 text-brass'
-                  : 'bg-ledger/10 text-ledger-strong dark:text-ledger'
-              }`}
-            >
-              {confirmacaoCobranca.forma === 'fiado' ? (
-                <BookBookmark size={32} weight="fill" />
-              ) : (
-                <CheckCircle size={32} weight="fill" />
-              )}
-            </div>
-
-            <div>
-              <p className="font-ledger text-3xl font-bold tabular-nums text-ink">
-                {formatCurrency(confirmacaoCobranca.total)}
-              </p>
-              <p className="mt-1 text-sm text-ink-soft">
-                {confirmacaoCobranca.quantidadeItens} item(ns) ·{' '}
-                {FORMAS.find((item) => item.forma === confirmacaoCobranca.forma)?.label}
-              </p>
-            </div>
-
-            <div
-              className={`rounded-xl p-3 text-left text-sm ${
-                confirmacaoCobranca.forma === 'fiado'
-                  ? 'bg-brass/10 text-brass'
-                  : 'bg-ledger/10 text-ledger-strong dark:text-ledger'
-              }`}
-            >
-              {confirmacaoCobranca.forma === 'fiado' ? (
-                <>
-                  <p className="font-semibold">Fiado registrado{confirmacaoCobranca.cliente ? ` para ${confirmacaoCobranca.cliente}` : ''}.</p>
-                  <p className="mt-1 text-xs">Esse valor entrará no caixa somente quando o pagamento receber baixa.</p>
-                </>
-              ) : (
-                <>
-                  <p className="font-semibold">Entrada adicionada com sucesso.</p>
-                  <p className="mt-1 text-xs">O valor já aparece nas movimentações e no saldo do caixa.</p>
-                </>
-              )}
-            </div>
-
-            <div className="flex gap-3">
-              <button
-                type="button"
-                onClick={() => setConfirmacaoCobranca(null)}
-                className="flex-1 rounded-lg border border-line bg-paper px-4 py-2.5 text-sm font-medium text-ink transition hover:bg-line/30"
-              >
-                Fechar
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const destino = confirmacaoCobranca.forma === 'fiado' ? '/financas?tab=receber' : '/entradas';
-                  setConfirmacaoCobranca(null);
-                  navigate(destino);
-                }}
-                className="flex-1 rounded-lg bg-ledger px-4 py-2.5 text-sm font-bold text-paper transition hover:bg-ledger-strong"
-              >
-                {confirmacaoCobranca.forma === 'fiado' ? 'Ver em Finanças' : 'Ver em Entradas'}
-              </button>
-            </div>
-          </div>
-        )}
-      </Modal>
-
-      <Modal open={modalAbertura} onClose={() => setModalAbertura(false)} title="Abrir novo caixa">
-        <form
-          className="space-y-4"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void abrirNovoCaixa();
-          }}
-        >
-          <p className="text-sm text-ink-soft">Informe quanto há em dinheiro físico no início desta sessão.</p>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-ink-soft">Valor inicial</label>
-            <input
-              autoFocus
-              value={valorInicial}
-              onChange={(event) => setValorInicial(sanitizeMoneyInput(event.target.value))}
-              type="text"
-              inputMode="decimal"
-              placeholder="0,00"
-              className="w-full rounded-xl border border-line bg-paper px-4 py-3 font-ledger text-xl text-ink focus:outline-none focus:ring-2 focus:ring-ledger/30"
-            />
-          </div>
-          {erroOperacao && <p className="text-sm font-medium text-stamp">{erroOperacao}</p>}
-          <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={() => setModalAbertura(false)}
-              className="flex-1 rounded-lg border border-line px-4 py-2.5 text-sm font-medium text-ink"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={salvando}
-              className="flex-1 rounded-lg bg-ledger px-4 py-2.5 text-sm font-bold text-paper disabled:opacity-60"
-            >
-              {salvando ? 'Abrindo…' : 'Abrir Caixa'}
-            </button>
-          </div>
-        </form>
-      </Modal>
-
     </div>
   );
 }

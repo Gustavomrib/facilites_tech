@@ -1,0 +1,54 @@
+name: rollback
+
+# Redeploys a previously-built image tag (a commit SHA from a prior deploy.yml
+# run, or an explicit tag like "latest" for a straight retry). Does NOT
+# rebuild anything and does NOT run any schema "down" migration — Prisma
+# migrations here are forward-only by design (see docs/DEPLOYMENT.md), so a
+# rollback is a code rollback only. If the bad deploy included a migration
+# that's incompatible with the previous code, this will not undo the schema
+# change; see docs/DEPLOYMENT.md for what to check before relying on this.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag/SHA to redeploy (from a previous deploy.yml run — see its job summary)'
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    name: Redeploy a previous image
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Compute image reference
+        id: image
+        run: |
+          repo_lower=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "image=ghcr.io/${repo_lower}-backend:${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify deploy target is configured
+        run: |
+          if [ -z "${{ secrets.DEPLOY_HOST }}" ]; then
+            echo "::error::DEPLOY_HOST secret not set — nothing to roll back. See docs/DEPLOYMENT.md."
+            exit 1
+          fi
+
+      - name: Redeploy over SSH (docker compose pull + up -d)
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.DEPLOY_PATH }}"
+            ./scripts/remote-deploy.sh "${{ steps.image.outputs.image }}"
+
+      - name: Rollback summary
+        run: echo "Rolled back to ${{ steps.image.outputs.image }} on ${{ secrets.DEPLOY_HOST }}."

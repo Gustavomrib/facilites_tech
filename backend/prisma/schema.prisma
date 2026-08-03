@@ -1,0 +1,256 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  OWNER
+  ADMIN
+  STAFF
+}
+
+enum Offering {
+  PRODUCTS
+  SERVICES
+  BOTH
+}
+
+enum DashboardPeriod {
+  DAY
+  WEEK
+}
+
+enum ReportFrequency {
+  NONE
+  WEEKLY
+  MONTHLY
+  BOTH
+}
+
+enum ProductType {
+  PRODUCT
+  SERVICE
+}
+
+enum PaymentMethod {
+  CASH
+  PIX
+  CREDIT_CARD
+  DEBIT_CARD
+  STORE_CREDIT // "fiado"
+}
+
+enum AccountType {
+  PAYABLE
+  RECEIVABLE
+}
+
+enum Recurrence {
+  WEEKLY
+  MONTHLY
+}
+
+// ---------------------------------------------------------------------------
+// Tenant + identity
+// ---------------------------------------------------------------------------
+
+model Company {
+  id                  String          @id @default(uuid())
+  name                String
+  sector              String? // "categoria" / ramo de atuacao — also drives frontend theme
+  offering            Offering        @default(BOTH)
+  tracksInventory     Boolean         @default(true)
+  dailySalesGoal      Decimal?        @db.Decimal(12, 2)
+  dashboardPeriod     DashboardPeriod @default(DAY)
+  reportFrequency     ReportFrequency @default(NONE)
+  reportByEmail       Boolean         @default(false)
+  reportEmail         String?
+  onboardingCompleted Boolean         @default(false)
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+
+  users         User[]
+  customers     Customer[]
+  products      Product[]
+  sales         Sale[]
+  accounts      Account[]
+  fixedExpenses FixedExpense[]
+  auditLogs     AuditLog[]
+
+  @@map("companies")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  companyId    String
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role     @default(OWNER)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+  auditLogs     AuditLog[]
+
+  @@index([companyId])
+  @@map("users")
+}
+
+model RefreshToken {
+  id           String    @id @default(uuid())
+  userId       String
+  tokenHash    String    @unique
+  familyId     String // groups a rotation chain so reuse-detection can revoke the whole family
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  replacedById String?
+  createdByIp  String?
+  createdAt    DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+  @@map("refresh_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// Business domain
+// ---------------------------------------------------------------------------
+
+model Customer {
+  id        String   @id @default(uuid())
+  companyId String
+  name      String
+  phone     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sales    Sale[]
+  accounts Account[]
+
+  @@index([companyId])
+  @@map("customers")
+}
+
+model Product {
+  id          String      @id @default(uuid())
+  companyId   String
+  name        String
+  // Unique per company, not globally — see @@unique below. NULL for services
+  // (they don't track stock, an SKU has no meaning); Postgres unique
+  // constraints allow unlimited NULLs, so many services coexist fine.
+  sku         String?
+  category    String?
+  type        ProductType @default(PRODUCT)
+  quantity    Int         @default(0)
+  minQuantity Int         @default(0)
+  salePrice   Decimal     @db.Decimal(12, 2)
+  cost        Decimal?    @db.Decimal(12, 2)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sales   Sale[]
+
+  @@unique([companyId, sku])
+  @@index([companyId])
+  @@map("products")
+}
+
+model Sale {
+  id              String        @id @default(uuid())
+  companyId       String
+  date            DateTime      @db.Date
+  description     String
+  quantity        Int
+  unitPrice       Decimal       @db.Decimal(12, 2)
+  paymentMethod   PaymentMethod
+  productId       String?
+  customerId      String? // set when paymentMethod = STORE_CREDIT
+  createdByUserId String?
+  createdAt       DateTime      @default(now())
+
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  product  Product?  @relation(fields: [productId], references: [id])
+  customer Customer? @relation(fields: [customerId], references: [id])
+  account  Account? // receivable generated by this sale, if fiado
+
+  @@index([companyId, date])
+  @@map("sales")
+}
+
+model Account {
+  id             String      @id @default(uuid())
+  companyId      String
+  type           AccountType
+  description    String
+  amount         Decimal     @db.Decimal(12, 2)
+  dueDate        DateTime    @db.Date
+  paid           Boolean     @default(false)
+  paidAt         DateTime?
+  originSaleId   String?     @unique
+  customerId     String?
+  fixedExpenseId String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  originSale   Sale?         @relation(fields: [originSaleId], references: [id])
+  customer     Customer?     @relation(fields: [customerId], references: [id])
+  fixedExpense FixedExpense? @relation(fields: [fixedExpenseId], references: [id])
+
+  @@index([companyId, type, paid])
+  @@index([companyId, dueDate])
+  @@map("accounts")
+}
+
+model FixedExpense {
+  id                   String     @id @default(uuid())
+  companyId            String
+  name                 String
+  amount               Decimal    @db.Decimal(12, 2)
+  recurrence           Recurrence
+  active               Boolean    @default(true)
+  // Anchor for the next occurrence. Always advanced from the previous DUE
+  // DATE (not from "today"/payment date), so a late payment never drifts
+  // the recurring schedule forward. Null until the first occurrence is generated.
+  lastGeneratedDueDate DateTime?  @db.Date
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
+
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accounts Account[]
+
+  @@index([companyId])
+  @@map("fixed_expenses")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  companyId  String
+  userId     String?
+  action     String
+  entityType String
+  entityId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User?   @relation(fields: [userId], references: [id])
+
+  @@index([companyId, createdAt])
+  @@map("audit_logs")
+}

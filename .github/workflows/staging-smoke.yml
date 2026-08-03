@@ -1,0 +1,83 @@
+name: staging-smoke
+
+# Light-touch post-deploy check against an already-running staging
+# environment. Unlike e2e-pr.yml, this does NOT provision Postgres or start
+# the backend — staging is assumed to already be up. It only runs the
+# non-destructive subset of the Playwright suite (dashboard/product/sale/
+# fiado/501 smoke tests, plus the read-only session-reload and
+# no-token-in-storage auth checks) so a shared staging backend's
+# login/register rate limit (see docs/E2E_TESTING.md §4) is never at risk —
+# it deliberately never runs the tests that log out or register through the
+# UI wizard.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: 'Staging frontend origin (overrides the STAGING_BASE_URL repo variable)'
+        required: false
+        type: string
+      api_base:
+        description: 'Staging API origin including /api (overrides the STAGING_API_BASE repo variable)'
+        required: false
+        type: string
+  schedule:
+    # Daily catch-all in case a deploy lands without a manual run.
+    - cron: '0 7 * * *'
+
+concurrency:
+  group: staging-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Staging smoke (Playwright)
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      PLAYWRIGHT_BASE_URL: ${{ inputs.base_url || vars.STAGING_BASE_URL }}
+      E2E_API_BASE: ${{ inputs.api_base || vars.STAGING_API_BASE }}
+      # Staging already has its own frontend running — don't let Playwright
+      # try to spawn a local Vite dev server.
+      PLAYWRIGHT_SKIP_WEBSERVER: '1'
+      CI: 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify staging target is configured
+        run: |
+          if [ -z "$PLAYWRIGHT_BASE_URL" ] || [ -z "$E2E_API_BASE" ]; then
+            echo "::error::Set the STAGING_BASE_URL and STAGING_API_BASE repository variables (Settings > Environments > staging), or pass base_url/api_base inputs."
+            exit 1
+          fi
+          echo "Frontend: $PLAYWRIGHT_BASE_URL"
+          echo "API:      $E2E_API_BASE"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run smoke checks (dashboard, product, sale, fiado, reports 501)
+        run: npx playwright test e2e/smoke.spec.ts
+
+      - name: Run read-only session/storage checks
+        run: npx playwright test e2e/auth.spec.ts -g "session persistence|token storage"
+
+      - name: Upload Playwright report & traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-smoke-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14
+          if-no-files-found: ignore

@@ -1,96 +1,98 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Lock, Storefront } from '@phosphor-icons/react';
-import { useAuth } from '../context/AuthContext';
-import LoadingScreen from '../components/LoadingScreen';
+import { SignIn, Storefront } from '@phosphor-icons/react';
+import { useAuth } from '../auth/AuthContext';
+import { ApiError } from '../api/httpClient';
+import PasswordInput from '../components/PasswordInput';
 
 export default function Login() {
-  const navigate = useNavigate();
   const { login } = useAuth();
+  const navigate = useNavigate();
+
   const [email, setEmail] = useState('');
-  const [senha, setSenha] = useState('');
+  const [password, setPassword] = useState('');
   const [erro, setErro] = useState<string | null>(null);
   const [enviando, setEnviando] = useState(false);
 
-  const entrar = async (e: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setErro(null);
     setEnviando(true);
     try {
-      await login(email, senha);
-      navigate('/');
+      await login({ email: email.trim(), password });
+      navigate('/', { replace: true });
     } catch (err) {
-      setErro(err instanceof Error ? err.message : 'Não foi possível entrar.');
+      setErro(err instanceof ApiError ? err.message : 'Não foi possível entrar. Tente novamente.');
     } finally {
       setEnviando(false);
     }
   };
 
-  if (enviando) return <LoadingScreen />;
-
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-paper px-6 py-12 text-ink">
-      <Link to="/" className="mb-8 flex items-center gap-1 text-sm font-medium text-ink-soft hover:text-ink">
-        <ArrowLeft size={16} /> Voltar para a apresentação
+    <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-gradient-to-br from-blue-700 to-blue-900 px-6 py-8 text-white">
+      <Link to="/" className="mb-4 text-sm font-medium text-blue-100 hover:text-white">
+        CaixaFácil
       </Link>
+      <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-3xl bg-white shadow-lg shadow-blue-900/50">
+        <Storefront size={38} weight="fill" className="text-blue-600" />
+      </div>
+      <h1 className="mb-1 text-center text-2xl font-extrabold leading-tight tracking-tight">
+        Meu Negócio no Bolso
+      </h1>
+      <p className="mb-6 text-center text-xs font-medium text-blue-200">Entre para continuar</p>
 
-      <div className="receipt-edge w-full max-w-sm rounded-2xl border border-line bg-paper-raised px-7 pb-10 pt-8 shadow-sm">
-        <div className="mb-6 flex flex-col items-center text-center">
-          <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-ledger text-paper">
-            <Storefront size={24} weight="fill" />
-          </div>
-          <p className="mb-1 font-ledger text-[10px] font-bold uppercase tracking-[0.18em] text-ledger-strong dark:text-ledger">CaixaFácil</p>
-          <h1 className="font-display text-2xl font-bold">Bem-vindo de volta</h1>
-          <p className="mt-1 text-sm text-ink-soft">Entre para abrir sua caderneta.</p>
+      <form
+        onSubmit={handleSubmit}
+        className="flex w-full max-w-sm flex-col gap-4 rounded-[2rem] bg-white p-6 text-gray-800 shadow-2xl dark:bg-slate-800 dark:text-slate-100"
+      >
+        <div>
+          <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-slate-400">
+            E-mail
+          </label>
+          <input
+            type="email"
+            required
+            autoFocus
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="seuemail@exemplo.com"
+            className="w-full rounded-lg border border-gray-300 p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 dark:placeholder-slate-400"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-slate-400">
+            Senha
+          </label>
+          <PasswordInput
+            required
+            minLength={8}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="••••••••"
+            className="w-full rounded-lg border border-gray-300 p-2.5 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 dark:placeholder-slate-400"
+          />
         </div>
 
-        <form className="space-y-4" onSubmit={entrar}>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-ink-soft">E-mail</label>
-            <input
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="voce@seunegocio.com"
-              className="w-full rounded-lg border border-line bg-paper p-2.5 text-sm text-ink focus:border-ledger focus:outline-none focus:ring-2 focus:ring-ledger/30"
-            />
-          </div>
-          <div>
-            <div className="mb-1 flex items-center justify-between gap-3">
-              <label className="text-xs font-medium text-ink-soft">Senha</label>
-              <Link to="/recuperar-conta" className="text-xs font-semibold text-ledger-strong hover:underline dark:text-ledger">
-                Esqueci minha senha
-              </Link>
-            </div>
-            <input
-              type="password"
-              required
-              value={senha}
-              onChange={(e) => setSenha(e.target.value)}
-              placeholder="••••••••"
-              className="w-full rounded-lg border border-line bg-paper p-2.5 text-sm text-ink focus:border-ledger focus:outline-none focus:ring-2 focus:ring-ledger/30"
-            />
-          </div>
+        {erro && <p className="text-xs font-medium text-red-600 dark:text-red-400">{erro}</p>}
 
-          {erro && <p className="text-xs font-medium text-stamp">{erro}</p>}
+        <button
+          type="submit"
+          disabled={enviando}
+          className={`mt-1 flex items-center justify-center gap-2 rounded-xl py-3 font-bold text-white shadow-md transition active:scale-95 ${
+            enviando ? 'cursor-not-allowed bg-blue-300 dark:bg-blue-900' : 'bg-blue-600 hover:bg-blue-700'
+          }`}
+        >
+          <SignIn size={18} weight="bold" /> {enviando ? 'Entrando...' : 'Entrar'}
+        </button>
 
-          <button
-            type="submit"
-            disabled={enviando}
-            className="flex w-full items-center justify-center gap-2 rounded-lg bg-ledger py-3 text-sm font-bold text-paper shadow-md transition hover:bg-ledger-strong active:scale-[0.98] disabled:opacity-60"
-          >
-            <Lock size={16} weight="fill" /> {enviando ? 'Entrando...' : 'Entrar'}
-          </button>
-        </form>
-
-        <p className="mt-6 text-center text-sm text-ink-soft">
-          Ainda não usa o app?{' '}
-          <Link to="/cadastro" className="font-semibold text-ledger-strong dark:text-ledger">
-            Começar agora
-          </Link>
-        </p>
-      </div>
+        <button
+          type="button"
+          onClick={() => navigate('/onboarding')}
+          className="text-center text-xs font-medium text-blue-600 dark:text-blue-400"
+        >
+          Não tem conta? Criar agora
+        </button>
+      </form>
     </div>
   );
 }

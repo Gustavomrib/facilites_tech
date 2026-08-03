@@ -1,43 +1,38 @@
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Navigate, Route, Routes } from 'react-router-dom';
 import { useAppData } from './context/AppDataContext';
-import { useAuth } from './context/AuthContext';
+import { useAuth } from './auth/AuthContext';
 import Layout from './components/Layout';
+import SplashLoading from './components/SplashLoading';
 import Landing from './pages/Landing';
 import Login from './pages/Login';
-import Cadastro from './pages/Cadastro';
 import Onboarding from './pages/Onboarding';
 import Dashboard from './pages/Dashboard';
 import Caixa from './pages/Caixa';
-import FecharCaixa from './pages/FecharCaixa';
-import Catalogo from './pages/Catalogo';
+import Estoque from './pages/Estoque';
 import Financas from './pages/Financas';
 import Configuracoes from './pages/Configuracoes';
 import Movimentacoes from './pages/Movimentacoes';
-import RecuperarConta from './pages/RecuperarConta';
 import RelatoriosCaixa from './pages/RelatoriosCaixa';
 import RelatorioPeriodo from './pages/RelatorioPeriodo';
 import Relatorios from './pages/Relatorios';
 import Fechamentos from './pages/Fechamentos';
-import LoadingScreen from './components/LoadingScreen';
 
 export default function App() {
-  const { pathname } = useLocation();
-  const { isAuthenticated, isInitializing, user } = useAuth();
-  const { data, loadedUserId } = useAppData();
-  const onboardingConcluido = data.config?.onboardingConcluido ?? false;
+  const { status } = useAuth();
+  const { data } = useAppData();
 
-  if (isInitializing || (user && loadedUserId !== user.id)) {
-    if (pathname !== '/' && pathname !== '/login') return null;
-    return <LoadingScreen />;
-  }
+  if (status === 'loading') return <SplashLoading />;
 
-  if (!isAuthenticated) {
+  const autenticado = status === 'authenticated';
+  const onboardingConcluido = autenticado && (data.config?.onboardingConcluido ?? false);
+
+  if (!autenticado) {
     return (
       <Routes>
         <Route path="/" element={<Landing />} />
         <Route path="/login" element={<Login />} />
-        <Route path="/cadastro" element={<Cadastro />} />
-        <Route path="/recuperar-conta" element={<RecuperarConta />} />
+        <Route path="/onboarding" element={<Onboarding />} />
+        <Route path="/cadastro" element={<Navigate to="/onboarding" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     );
@@ -46,6 +41,8 @@ export default function App() {
   if (!onboardingConcluido) {
     return (
       <Routes>
+        <Route path="/login" element={<Navigate to="/onboarding" replace />} />
+        <Route path="/cadastro" element={<Navigate to="/onboarding" replace />} />
         <Route path="/onboarding" element={<Onboarding />} />
         <Route path="*" element={<Navigate to="/onboarding" replace />} />
       </Routes>
@@ -60,9 +57,8 @@ export default function App() {
       <Route element={<Layout />}>
         <Route path="/" element={<Dashboard />} />
         <Route path="/caixa" element={<Caixa />} />
-        <Route path="/caixa/fechamento" element={<FecharCaixa />} />
-        <Route path="/catalogo" element={<Catalogo />} />
-        <Route path="/estoque" element={<Navigate to="/catalogo" replace />} />
+        <Route path="/catalogo" element={<Navigate to="/estoque" replace />} />
+        <Route path="/estoque" element={<Estoque />} />
         <Route path="/financas" element={<Financas />} />
         <Route path="/movimentacoes" element={<Movimentacoes modo="todas" />} />
         <Route path="/entradas" element={<Movimentacoes modo="vendas" />} />

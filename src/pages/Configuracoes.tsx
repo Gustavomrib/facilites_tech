@@ -1,55 +1,29 @@
-import { useRef, useState, type ChangeEvent, type FormEvent } from 'react';
-import {
-  DownloadSimple,
-  EnvelopeSimple,
-  Key,
-  Moon,
-  PaperPlaneTilt,
-  Plus,
-  ShieldCheck,
-  SignOut,
-  Sun,
-  Trash,
-  UploadSimple,
-  Warning,
-} from '@phosphor-icons/react';
+import { useState, type FormEvent } from 'react';
+import { Moon, PaperPlaneTilt, Plus, Sun, Trash } from '@phosphor-icons/react';
 import { useAppData } from '../context/AppDataContext';
-import { useAuth } from '../context/AuthContext';
-import { formatCurrency, parseMoney, sanitizeMoneyInput, todayISO } from '../lib/format';
-import { isValidAppData, loadData, saveData } from '../lib/storage';
-import { useDarkMode } from '../lib/theme';
+import { useAuth } from '../auth/AuthContext';
+import { ApiError } from '../api/httpClient';
+import * as reportsApi from '../api/reportsApi';
+import { formatCurrency, parseMoney } from '../lib/format';
+import { applyDarkPreference, getInitialDark } from '../lib/theme';
 import { RAMOS_ATUACAO } from '../types';
-import type { AppData, FrequenciaRelatorio, Oferta, Recorrencia, ViewPeriod } from '../types';
-import Modal from '../components/Modal';
+import type { FrequenciaRelatorio, Oferta, Recorrencia, ViewPeriod } from '../types';
 
 export default function Configuracoes() {
-  const { data, setConfig, resetData, cadastrarDespesaFixaNoBanco, removerDespesaFixaNoBanco } = useAppData();
+  const { data, setConfig, addDespesaFixa, removerDespesaFixa } = useAppData();
+  const { logout } = useAuth();
   const config = data.config;
-  const { user, logout, resetAccountData, changePassword } = useAuth();
 
   const [novaDespesaNome, setNovaDespesaNome] = useState('');
   const [novaDespesaValor, setNovaDespesaValor] = useState('');
   const [novaDespesaRecorrencia, setNovaDespesaRecorrencia] = useState<Recorrencia>('mensal');
-  const [darkMode, setDarkMode] = useDarkMode();
-  const [importErro, setImportErro] = useState<string | null>(null);
-  const [importPendente, setImportPendente] = useState<AppData | null>(null);
-  const [resetando, setResetando] = useState(false);
-  const [resetErro, setResetErro] = useState<string | null>(null);
-  const [acaoPendente, setAcaoPendente] = useState<'logout' | 'reset' | null>(null);
-  const [despesaFixaSalvando, setDespesaFixaSalvando] = useState(false);
-  const [despesaFixaErro, setDespesaFixaErro] = useState<string | null>(null);
-  const [senhaAtual, setSenhaAtual] = useState('');
-  const [novaSenha, setNovaSenha] = useState('');
-  const [confirmarNovaSenha, setConfirmarNovaSenha] = useState('');
-  const [senhaSalvando, setSenhaSalvando] = useState(false);
-  const [senhaErro, setSenhaErro] = useState<string | null>(null);
-  const [senhaSucesso, setSenhaSucesso] = useState<string | null>(null);
-  const arquivoInputRef = useRef<HTMLInputElement>(null);
+  const [darkMode, setDarkMode] = useState(getInitialDark());
+  const [enviandoRelatorio, setEnviandoRelatorio] = useState(false);
 
   if (!config) return null;
 
   const salvarCampo = (patch: Partial<typeof config>) => {
-    setConfig({ ...config, ...patch });
+    void setConfig(patch);
   };
 
   const adicionarDespesaFixa = async (e: FormEvent) => {
@@ -57,257 +31,49 @@ export default function Configuracoes() {
     const valor = parseMoney(novaDespesaValor);
     if (!novaDespesaNome.trim() || !valor || valor <= 0) return;
 
-    setDespesaFixaSalvando(true);
-    setDespesaFixaErro(null);
     try {
-      await cadastrarDespesaFixaNoBanco({
-        nome: novaDespesaNome.trim(),
-        valor,
-        recorrencia: novaDespesaRecorrencia,
-      });
+      await addDespesaFixa({ nome: novaDespesaNome.trim(), valor, recorrencia: novaDespesaRecorrencia });
       setNovaDespesaNome('');
       setNovaDespesaValor('');
-    } catch (error) {
-      setDespesaFixaErro(error instanceof Error ? error.message : 'Não foi possível salvar a conta fixa.');
+    } catch (err) {
+      alert(err instanceof ApiError ? err.message : 'Não foi possível salvar a despesa fixa.');
+    }
+  };
+
+  const enviarRelatorioAgora = async () => {
+    setEnviandoRelatorio(true);
+    try {
+      await reportsApi.sendReportNow();
+      alert(`Relatório enviado para ${config.relatorio.email || '(nenhum e-mail cadastrado)'}.`);
+    } catch (err) {
+      alert(err instanceof ApiError ? err.message : 'Não foi possível enviar o relatório agora.');
     } finally {
-      setDespesaFixaSalvando(false);
+      setEnviandoRelatorio(false);
     }
   };
-
-  const removerDespesaFixa = async (id: string) => {
-    setDespesaFixaErro(null);
-    try {
-      await removerDespesaFixaNoBanco(id);
-    } catch (error) {
-      setDespesaFixaErro(error instanceof Error ? error.message : 'Não foi possível remover a conta fixa.');
-    }
-  };
-
-  const enviarRelatorioAgora = () => {
-    // TODO: integração real fica para versão futura com backend
-    alert(`Relatório simulado enviado para ${config.relatorio.email || '(nenhum e-mail cadastrado)'}.`);
-  };
-
-  const exportarDados = () => {
-    const dados = loadData(user?.id);
-    const conteudo = JSON.stringify(dados, null, 2);
-    const blob = new Blob([conteudo], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `backup-caixafacil-${todayISO()}.json`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-
-  const abrirSeletorDeArquivo = () => {
-    setImportErro(null);
-    arquivoInputRef.current?.click();
-  };
-
-  const handleArquivoSelecionado = (e: ChangeEvent<HTMLInputElement>) => {
-    const arquivo = e.target.files?.[0];
-    e.target.value = ''; // permite selecionar o mesmo arquivo de novo depois, se precisar
-
-    if (!arquivo) return;
-
-    const leitor = new FileReader();
-    leitor.onload = () => {
-      try {
-        const parsed = JSON.parse(String(leitor.result));
-        if (!isValidAppData(parsed)) {
-          setImportErro('Arquivo inválido: não é um backup reconhecível do CaixaFácil.');
-          return;
-        }
-        setImportErro(null);
-        setImportPendente(parsed);
-      } catch {
-        setImportErro('Arquivo inválido: não foi possível interpretar o conteúdo como JSON.');
-      }
-    };
-    leitor.onerror = () => setImportErro('Não foi possível ler o arquivo selecionado.');
-    leitor.readAsText(arquivo);
-  };
-
-  const confirmarImportacao = () => {
-    if (!importPendente) return;
-    saveData(importPendente, user?.id);
-    window.location.reload();
-  };
-
-  const zerarDadosDaConta = async () => {
-    setResetando(true);
-    setResetErro(null);
-    try {
-      await resetAccountData();
-      resetData();
-      setAcaoPendente(null);
-      await logout();
-    } catch (error) {
-      setResetErro(error instanceof Error ? error.message : 'Não foi possível zerar os dados da conta.');
-      setResetando(false);
-    }
-  };
-
-  const confirmarAcaoPendente = async () => {
-    if (acaoPendente === 'logout') {
-      setAcaoPendente(null);
-      try {
-        await logout();
-      } catch (error) {
-        setResetErro(error instanceof Error ? error.message : 'Não foi possível sair da conta.');
-      }
-      return;
-    }
-    if (acaoPendente === 'reset') void zerarDadosDaConta();
-  };
-
-  const alterarSenha = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setSenhaErro(null);
-    setSenhaSucesso(null);
-    if (novaSenha.length < 6) {
-      setSenhaErro('A nova senha deve ter pelo menos 6 caracteres.');
-      return;
-    }
-    if (novaSenha !== confirmarNovaSenha) {
-      setSenhaErro('A confirmação da nova senha não confere.');
-      return;
-    }
-
-    setSenhaSalvando(true);
-    try {
-      const message = await changePassword(senhaAtual, novaSenha, confirmarNovaSenha);
-      setSenhaAtual('');
-      setNovaSenha('');
-      setConfirmarNovaSenha('');
-      setSenhaSucesso(message);
-    } catch (error) {
-      setSenhaErro(error instanceof Error ? error.message : 'Não foi possível alterar a senha.');
-    } finally {
-      setSenhaSalvando(false);
-    }
-  };
-
-  const inputClasses =
-    'w-full rounded-lg border border-line bg-paper p-2 text-ink focus:outline-none focus:ring-2 focus:ring-ledger/30';
 
   return (
-    <div className="fade-in space-y-6 lg:grid lg:grid-cols-2 lg:gap-6 lg:space-y-0">
-      <header className="lg:col-span-2">
-        <h2 className="font-display text-2xl font-bold text-ink">Configurações</h2>
-        <p className="mt-1 text-sm text-ink-soft">Organize sua conta, seu negócio e as preferências do CaixaFácil.</p>
-      </header>
+    <div className="fade-in space-y-6">
+      <h2 className="text-xl font-bold text-gray-800 dark:text-slate-100">Configurações</h2>
 
-      <section className="min-w-0 rounded-2xl border border-line bg-paper-raised p-4 shadow-sm sm:p-5 lg:col-span-2">
-        <div className="mb-4 flex items-start gap-3 border-b border-line pb-4">
-          <span className="rounded-xl bg-ledger/10 p-2.5 text-ledger-strong dark:text-ledger">
-            <ShieldCheck size={21} weight="duotone" />
-          </span>
-          <div>
-            <h3 className="font-display text-lg font-bold text-ink">Conta e segurança</h3>
-            <p className="mt-1 text-xs text-ink-soft">Consulte seu acesso e altere sua senha com segurança.</p>
-          </div>
-        </div>
-
-        <div className="grid gap-5 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] lg:gap-7">
-          <div className="min-w-0">
-            <label htmlFor="email-conta" className="mb-1 block text-xs font-medium text-ink-soft">E-mail da conta</label>
-            <div className="relative">
-              <EnvelopeSimple size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-soft" />
-              <input
-                id="email-conta"
-                type="email"
-                value={user?.email ?? ''}
-                readOnly
-                className="w-full rounded-lg border border-line bg-paper py-2.5 pl-10 pr-3 text-sm text-ink outline-none"
-              />
-            </div>
-            <p className="mt-2 text-xs text-ink-soft">Este é o e-mail usado para entrar no CaixaFácil.</p>
-            <button
-              type="button"
-              onClick={() => setAcaoPendente('logout')}
-              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-stamp/30 bg-stamp/5 px-4 py-2.5 text-sm font-bold text-stamp transition hover:bg-stamp/10 sm:w-auto"
-            >
-              <SignOut size={18} /> Sair da conta
-            </button>
-          </div>
-
-          <form onSubmit={alterarSenha} className="grid min-w-0 gap-3 sm:grid-cols-2">
-            <label className="sm:col-span-2">
-              <span className="mb-1 block text-xs font-medium text-ink-soft">Senha atual</span>
-              <div className="relative">
-                <Key size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-soft" />
-                <input
-                  type="password"
-                  autoComplete="current-password"
-                  value={senhaAtual}
-                  onChange={(event) => setSenhaAtual(event.target.value)}
-                  placeholder="Digite sua senha atual"
-                  required
-                  className="w-full rounded-lg border border-line bg-paper py-2.5 pl-10 pr-3 text-sm text-ink outline-none focus:ring-2 focus:ring-ledger/30"
-                />
-              </div>
-            </label>
-            <label>
-              <span className="mb-1 block text-xs font-medium text-ink-soft">Nova senha</span>
-              <input
-                type="password"
-                autoComplete="new-password"
-                minLength={6}
-                value={novaSenha}
-                onChange={(event) => setNovaSenha(event.target.value)}
-                placeholder="Mínimo de 6 caracteres"
-                required
-                className={inputClasses}
-              />
-            </label>
-            <label>
-              <span className="mb-1 block text-xs font-medium text-ink-soft">Confirmar nova senha</span>
-              <input
-                type="password"
-                autoComplete="new-password"
-                minLength={6}
-                value={confirmarNovaSenha}
-                onChange={(event) => setConfirmarNovaSenha(event.target.value)}
-                placeholder="Digite novamente"
-                required
-                className={inputClasses}
-              />
-            </label>
-            {senhaErro && <p className="text-xs font-medium text-stamp sm:col-span-2">{senhaErro}</p>}
-            {senhaSucesso && <p className="text-xs font-semibold text-ledger-strong dark:text-ledger sm:col-span-2">{senhaSucesso}</p>}
-            <button
-              type="submit"
-              disabled={senhaSalvando}
-              className="flex items-center justify-center gap-2 rounded-lg bg-ledger px-4 py-2.5 text-sm font-bold text-paper transition hover:bg-ledger-strong disabled:opacity-50 sm:col-span-2 sm:justify-self-end"
-            >
-              <Key size={17} /> {senhaSalvando ? 'Alterando…' : 'Alterar senha'}
-            </button>
-          </form>
-        </div>
-      </section>
-
-      <section className="min-w-0 rounded-2xl border border-line bg-paper-raised p-4 shadow-sm">
-        <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-ink-soft">Negócio</h3>
+      <section className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+        <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-gray-500 dark:text-slate-400">Negócio</h3>
         <div className="space-y-4">
           <div>
-            <label className="mb-1 block text-xs font-medium text-ink-soft">Nome do Negócio</label>
+            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-slate-300">Nome do negócio</label>
             <input
               type="text"
               defaultValue={config.nome}
               onBlur={(e) => salvarCampo({ nome: e.target.value.trim() || config.nome })}
-              className={inputClasses}
+              className="w-full rounded-lg border border-gray-300 p-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-ink-soft">Ramo de Atuação</label>
+            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-slate-300">Ramo de atuação</label>
             <select
               value={config.categoria}
               onChange={(e) => salvarCampo({ categoria: e.target.value })}
-              className={inputClasses}
+              className="w-full rounded-lg border border-gray-300 p-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
             >
               {RAMOS_ATUACAO.map((ramo) => (
                 <option key={ramo} value={ramo}>
@@ -317,282 +83,188 @@ export default function Configuracoes() {
             </select>
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-ink-soft">O que você oferece?</label>
+            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-slate-300">O que você oferece?</label>
             <select
               value={config.oferta}
               onChange={(e) => {
                 const oferta = e.target.value as Oferta;
                 salvarCampo({ oferta, controlaEstoque: oferta !== 'servicos' });
               }}
-              className={inputClasses}
+              className="w-full rounded-lg border border-gray-300 p-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
             >
               <option value="produtos">Produtos</option>
               <option value="servicos">Serviços</option>
               <option value="ambos">Ambos</option>
             </select>
           </div>
+          <label className="flex items-center justify-between">
+            <span className="text-xs font-medium text-gray-700 dark:text-slate-300">Controla estoque?</span>
+            <input
+              type="checkbox"
+              checked={config.controlaEstoque}
+              onChange={(e) => salvarCampo({ controlaEstoque: e.target.checked })}
+              className="h-5 w-5 accent-blue-600"
+            />
+          </label>
           <div>
-            <label className="mb-1 block text-xs font-medium text-ink-soft">Meta Diária de Vendas</label>
+            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-slate-300">Meta diária de vendas</label>
             <input
               type="text"
               inputMode="decimal"
               defaultValue={config.metaDiariaVendas ?? ''}
-              onInput={(e) => {
-                e.currentTarget.value = sanitizeMoneyInput(e.currentTarget.value);
-              }}
-              onBlur={(e) =>
-                salvarCampo({ metaDiariaVendas: e.target.value ? parseMoney(e.target.value) : undefined })
-              }
+              onBlur={(e) => salvarCampo({ metaDiariaVendas: e.target.value ? parseMoney(e.target.value) : undefined })}
               placeholder="Ex: 600,00"
-              className={inputClasses}
+              className="w-full rounded-lg border border-gray-300 p-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-ink-soft">Painel Inicial mostra números de</label>
+            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-slate-300">Painel inicial mostra números de</label>
             <select
               value={config.viewPeriod ?? 'day'}
               onChange={(e) => salvarCampo({ viewPeriod: e.target.value as ViewPeriod })}
-              className={inputClasses}
+              className="w-full rounded-lg border border-gray-300 p-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
             >
-              <option value="day">Dia Atual</option>
+              <option value="day">Dia atual</option>
               <option value="week">Semana (últimos 7 dias)</option>
             </select>
           </div>
         </div>
       </section>
 
-      <div className="min-w-0 space-y-6">
-        <section className="rounded-2xl border border-line bg-paper-raised p-4 shadow-sm">
-          <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-ink-soft">Aparência</h3>
-          <label className="flex items-center justify-between gap-3">
-            <span className="flex items-center gap-2 text-xs font-medium text-ink-soft">
-              {darkMode ? <Moon size={16} /> : <Sun size={16} />} Modo escuro
-            </span>
+      <section className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+        <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-gray-500 dark:text-slate-400">Aparência</h3>
+        <label className="flex items-center justify-between">
+          <span className="flex items-center gap-2 text-xs font-medium text-gray-700 dark:text-slate-300">
+            {darkMode ? <Moon size={16} /> : <Sun size={16} />} Modo escuro
+          </span>
+          <input
+            type="checkbox"
+            checked={darkMode}
+            onChange={(e) => {
+              setDarkMode(e.target.checked);
+              applyDarkPreference(e.target.checked);
+            }}
+            className="h-5 w-5 accent-blue-600"
+          />
+        </label>
+      </section>
+
+      <section className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+        <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-gray-500 dark:text-slate-400">Despesas fixas</h3>
+        <ul className="mb-3 space-y-2">
+          {data.despesasFixas.length === 0 && (
+            <p className="text-sm text-gray-400 dark:text-slate-500">Nenhuma despesa fixa cadastrada.</p>
+          )}
+          {data.despesasFixas.map((d) => (
+            <li key={d.id} className="flex items-center justify-between rounded-lg bg-gray-50 p-2 text-sm dark:bg-slate-700/50">
+              <span className="text-gray-800 dark:text-slate-200">
+                {d.nome} <span className="text-gray-400 dark:text-slate-500">({d.recorrencia})</span>
+              </span>
+              <div className="flex items-center gap-3">
+                <span className="font-medium text-gray-800 dark:text-slate-200">{formatCurrency(d.valor)}</span>
+                <button
+                  onClick={() => {
+                    void removerDespesaFixa(d.id);
+                  }}
+                  className="text-gray-400 hover:text-red-500 dark:text-slate-500 dark:hover:text-red-400"
+                >
+                  <Trash size={16} />
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+        <form onSubmit={adicionarDespesaFixa} className="flex flex-wrap gap-2">
+          <input
+            type="text"
+            value={novaDespesaNome}
+            onChange={(e) => setNovaDespesaNome(e.target.value)}
+            placeholder="Nome (ex: Aluguel)"
+            className="min-w-0 flex-1 rounded-lg border border-gray-300 p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+          />
+          <input
+            type="text"
+            inputMode="decimal"
+            value={novaDespesaValor}
+            onChange={(e) => setNovaDespesaValor(e.target.value)}
+            placeholder="Valor"
+            className="w-24 rounded-lg border border-gray-300 p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+          />
+          <select
+            value={novaDespesaRecorrencia}
+            onChange={(e) => setNovaDespesaRecorrencia(e.target.value as Recorrencia)}
+            className="rounded-lg border border-gray-300 p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+          >
+            <option value="mensal">Mensal</option>
+            <option value="semanal">Semanal</option>
+          </select>
+          <button type="submit" className="flex items-center gap-1 rounded-lg bg-blue-100 px-3 text-sm font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+            <Plus size={16} /> Add
+          </button>
+        </form>
+      </section>
+
+      <section className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+        <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-gray-500 dark:text-slate-400">Relatórios</h3>
+        <div className="space-y-4">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-slate-300">Frequência</label>
+            <select
+              value={config.relatorio.frequencia}
+              onChange={(e) =>
+                salvarCampo({
+                  relatorio: { ...config.relatorio, frequencia: e.target.value as FrequenciaRelatorio },
+                })
+              }
+              className="w-full rounded-lg border border-gray-300 p-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+            >
+              <option value="nenhum">Nenhum</option>
+              <option value="semanal">Semanal</option>
+              <option value="mensal">Mensal</option>
+              <option value="ambos">Semanal e mensal</option>
+            </select>
+          </div>
+          <label className="flex items-center justify-between">
+            <span className="text-xs font-medium text-gray-700 dark:text-slate-300">Receber por e-mail</span>
             <input
               type="checkbox"
-              checked={darkMode}
-              onChange={(e) => setDarkMode(e.target.checked)}
-              className="h-5 w-5 accent-ledger"
+              checked={config.relatorio.porEmail}
+              onChange={(e) => salvarCampo({ relatorio: { ...config.relatorio, porEmail: e.target.checked } })}
+              className="h-5 w-5 accent-blue-600"
             />
           </label>
-        </section>
-
-        <section className="rounded-2xl border border-line bg-paper-raised p-4 shadow-sm">
-          <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-ink-soft">Despesas Fixas</h3>
-          <ul className="mb-3 space-y-2">
-            {config.despesasFixas.length === 0 && (
-              <p className="text-sm text-ink-soft">Nenhuma despesa fixa cadastrada.</p>
-            )}
-            {config.despesasFixas.map((d) => (
-              <li key={d.id} className="flex items-center justify-between gap-2 rounded-lg bg-paper p-2 text-sm">
-                <span className="min-w-0 truncate text-ink">
-                  {d.nome} <span className="text-ink-soft">({d.recorrencia})</span>
-                </span>
-                <div className="flex shrink-0 items-center gap-3">
-                  <span className="font-ledger font-medium tabular-nums text-ink">{formatCurrency(d.valor)}</span>
-                  <button onClick={() => void removerDespesaFixa(d.id)} className="text-ink-soft hover:text-stamp">
-                    <Trash size={16} />
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-          <form onSubmit={adicionarDespesaFixa} className="space-y-2">
-            <input
-              type="text"
-              value={novaDespesaNome}
-              onChange={(e) => setNovaDespesaNome(e.target.value)}
-              placeholder="Nome (ex: Aluguel)"
-              className="w-full rounded-lg border border-line bg-paper p-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-ledger/30"
-            />
-            <div className="flex gap-2">
-              <input
-                type="text"
-                inputMode="decimal"
-                value={novaDespesaValor}
-                onChange={(e) => setNovaDespesaValor(sanitizeMoneyInput(e.target.value))}
-                placeholder="Ex: 900,00"
-                className="w-28 min-w-0 rounded-lg border border-line bg-paper p-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-ledger/30"
-              />
-              <select
-                value={novaDespesaRecorrencia}
-                onChange={(e) => setNovaDespesaRecorrencia(e.target.value as Recorrencia)}
-                className="min-w-0 flex-1 rounded-lg border border-line bg-paper p-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-ledger/30"
-              >
-                <option value="mensal">Mensal</option>
-                <option value="semanal">Semanal</option>
-              </select>
-              <button
-                type="submit"
-                disabled={despesaFixaSalvando}
-                className="flex shrink-0 items-center gap-1 rounded-lg bg-ledger/10 px-3 text-sm font-medium text-ledger-strong dark:text-ledger"
-              >
-                <Plus size={16} /> {despesaFixaSalvando ? 'Salvando…' : 'Add'}
-              </button>
-            </div>
-            {despesaFixaErro && <p className="text-xs font-medium text-stamp">{despesaFixaErro}</p>}
-          </form>
-        </section>
-
-        <section className="rounded-2xl border border-line bg-paper-raised p-4 shadow-sm">
-          <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-ink-soft">Relatórios</h3>
-          <div className="space-y-4">
+          {config.relatorio.porEmail && (
             <div>
-              <label className="mb-1 block text-xs font-medium text-ink-soft">Frequência</label>
-              <select
-                value={config.relatorio.frequencia}
-                onChange={(e) =>
-                  salvarCampo({
-                    relatorio: { ...config.relatorio, frequencia: e.target.value as FrequenciaRelatorio },
-                  })
-                }
-                className={inputClasses}
-              >
-                <option value="nenhum">Nenhum</option>
-                <option value="semanal">Semanal</option>
-                <option value="mensal">Mensal</option>
-                <option value="ambos">Semanal e Mensal</option>
-              </select>
-            </div>
-            <label className="flex items-center justify-between gap-3">
-              <span className="text-xs font-medium text-ink-soft">Receber por e-mail</span>
+              <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-slate-300">E-mail</label>
               <input
-                type="checkbox"
-                checked={config.relatorio.porEmail}
-                onChange={(e) => salvarCampo({ relatorio: { ...config.relatorio, porEmail: e.target.checked } })}
-                className="h-5 w-5 accent-ledger"
+                type="email"
+                defaultValue={config.relatorio.email}
+                onBlur={(e) => salvarCampo({ relatorio: { ...config.relatorio, email: e.target.value } })}
+                placeholder="seuemail@exemplo.com"
+                className="w-full rounded-lg border border-gray-300 p-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
               />
-            </label>
-            {config.relatorio.porEmail && (
-              <div>
-                <label className="mb-1 block text-xs font-medium text-ink-soft">E-mail</label>
-                <input
-                  type="email"
-                  defaultValue={config.relatorio.email}
-                  onBlur={(e) => salvarCampo({ relatorio: { ...config.relatorio, email: e.target.value } })}
-                  placeholder="seuemail@exemplo.com"
-                  className={inputClasses}
-                />
-              </div>
-            )}
-            <button
-              onClick={enviarRelatorioAgora}
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-ledger py-2.5 text-sm font-bold text-paper transition hover:bg-ledger-strong"
-            >
-              <PaperPlaneTilt size={18} /> Enviar Relatório Agora
-            </button>
-          </div>
-        </section>
-
-        <section className="rounded-2xl border border-line bg-paper-raised p-4 shadow-sm">
-          <h3 className="mb-1 text-sm font-bold uppercase tracking-wide text-ink-soft">Backup</h3>
-          <p className="mb-3 text-xs text-ink-soft">
-            Seus dados ficam só neste aparelho. Exporte um backup de vez em quando para não correr o risco de perdê-los.
-          </p>
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <button
-              onClick={exportarDados}
-              className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-ledger/10 py-2.5 text-sm font-bold text-ledger-strong transition hover:bg-ledger/20 dark:text-ledger"
-            >
-              <DownloadSimple size={18} /> Exportar Dados
-            </button>
-            <button
-              onClick={abrirSeletorDeArquivo}
-              className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-line py-2.5 text-sm font-bold text-ink transition hover:bg-line/30"
-            >
-              <UploadSimple size={18} /> Importar Dados
-            </button>
-            <input
-              ref={arquivoInputRef}
-              type="file"
-              accept="application/json,.json"
-              onChange={handleArquivoSelecionado}
-              className="hidden"
-            />
-          </div>
-          {importErro && <p className="mt-2 text-xs font-medium text-stamp">{importErro}</p>}
-        </section>
-
-        <div className="rounded-2xl border border-stamp/20 p-4">
-          <h3 className="mb-1 text-xs font-bold uppercase tracking-wide text-stamp">Zona de risco</h3>
-          <p className="mb-3 text-xs text-ink-soft">
-            Apaga produtos, vendas, fiado, despesas, caixas e configurações. Seu e-mail e senha são mantidos. Ao
-            concluir, você será desconectado e o próximo acesso começará pela configuração inicial.
-          </p>
-          <button
-            onClick={() => setAcaoPendente('reset')}
-            disabled={resetando}
-            className="w-full rounded-lg border border-stamp/30 bg-stamp/10 py-2.5 text-sm font-bold text-stamp transition hover:bg-stamp/20 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {resetando ? 'Zerando dados...' : 'Zerar Dados do App'}
-          </button>
-          {resetErro && <p className="mt-2 text-xs font-medium text-stamp">{resetErro}</p>}
-        </div>
-      </div>
-
-      <Modal open={importPendente !== null} onClose={() => setImportPendente(null)} title="Confirmar importação">
-        <div className="space-y-4">
-          <p className="text-sm text-ink-soft">
-            Isso vai <span className="font-semibold text-ink">substituir todos os dados atuais</span> pelo backup
-            selecionado. Esta ação não pode ser desfeita.
-          </p>
-          <div className="flex gap-3">
-            <button
-              onClick={() => setImportPendente(null)}
-              className="flex-1 rounded-lg border border-line bg-paper px-4 py-2 text-sm font-medium text-ink transition hover:bg-line/30"
-            >
-              Cancelar
-            </button>
-            <button
-              onClick={confirmarImportacao}
-              className="flex-1 rounded-lg bg-stamp px-4 py-2 text-sm font-semibold text-paper transition hover:bg-stamp/90"
-            >
-              Substituir Dados
-            </button>
-          </div>
-        </div>
-      </Modal>
-
-      <Modal
-        open={acaoPendente !== null}
-        onClose={() => {
-          if (!resetando) setAcaoPendente(null);
-        }}
-        title={acaoPendente === 'reset' ? 'Zerar dados do app?' : 'Sair da conta?'}
-      >
-        <div className="space-y-4">
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-stamp/10 text-stamp">
-            {acaoPendente === 'reset' ? <Warning size={24} weight="fill" /> : <SignOut size={24} />}
-          </div>
-          <p className="text-sm text-ink-soft">
-            {acaoPendente === 'reset'
-              ? 'Produtos, entradas, fiado, despesas, caixas e configurações serão apagados. Seu e-mail e senha serão mantidos, e você será desconectado.'
-              : 'Sua sessão será encerrada. Você precisará informar e-mail e senha para entrar novamente.'}
-          </p>
-          {acaoPendente === 'reset' && (
-            <p className="rounded-lg bg-stamp/10 p-3 text-xs font-semibold text-stamp">Esta ação não pode ser desfeita.</p>
+            </div>
           )}
-          {resetErro && <p className="text-xs font-medium text-stamp">{resetErro}</p>}
-          <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={() => setAcaoPendente(null)}
-              disabled={resetando}
-              className="flex-1 rounded-lg border border-line bg-paper px-4 py-2.5 text-sm font-medium text-ink transition hover:bg-line/30 disabled:opacity-60"
-            >
-              Cancelar
-            </button>
-            <button
-              type="button"
-              onClick={() => void confirmarAcaoPendente()}
-              disabled={resetando}
-              className="flex-1 rounded-lg bg-stamp px-4 py-2.5 text-sm font-bold text-paper transition hover:bg-stamp/90 disabled:opacity-60"
-            >
-              {resetando ? 'Zerando...' : acaoPendente === 'reset' ? 'Sim, zerar dados' : 'Sim, sair'}
-            </button>
-          </div>
+          <button
+            onClick={enviarRelatorioAgora}
+            disabled={enviandoRelatorio}
+            className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            <PaperPlaneTilt size={18} /> {enviandoRelatorio ? 'Enviando...' : 'Enviar relatório agora'}
+          </button>
         </div>
-      </Modal>
+      </section>
+
+      <button
+        onClick={() => {
+          if (confirm('Deseja sair da sua conta?')) {
+            void logout();
+          }
+        }}
+        className="w-full rounded-lg border border-red-200 bg-red-50 py-2.5 text-sm font-bold text-red-600 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-400"
+      >
+        Sair da conta
+      </button>
     </div>
   );
 }

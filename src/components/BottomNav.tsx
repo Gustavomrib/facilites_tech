@@ -1,23 +1,21 @@
 import { NavLink } from 'react-router-dom';
-import { House, Calculator, Package, CurrencyDollar, List, Receipt, ChartBar } from '@phosphor-icons/react';
+import { Calculator, CurrencyDollar, House, List, Package } from '@phosphor-icons/react';
 import { useAppData } from '../context/AppDataContext';
 
-const items = [
-  { to: '/', label: 'Início', Icon: House },
-  { to: '/caixa', label: 'Caixa', Icon: Calculator },
-  { to: '/catalogo', label: 'Catálogo', Icon: Package },
-  { to: '/financas', label: 'Finanças', Icon: CurrencyDollar },
-  { to: '/fechamentos', label: 'Fechamentos', Icon: Receipt },
-  { to: '/relatorios', label: 'Relatórios', Icon: ChartBar },
-];
+export default function BottomNav({ informacoesVisiveis = true }: { informacoesVisiveis?: boolean }) {
+  const { data } = useAppData();
+  const controlaEstoque = data.config?.controlaEstoque ?? true;
 
-export default function BottomNav({ informacoesVisiveis }: { informacoesVisiveis: boolean }) {
-  useAppData();
+  const items = [
+    { to: '/', label: 'Início', Icon: House },
+    { to: '/caixa', label: 'Caixa', Icon: Calculator },
+    { to: '/estoque', label: controlaEstoque ? 'Estoque' : 'Serviços', Icon: Package },
+    { to: '/financas', label: 'Finanças', Icon: CurrencyDollar },
+  ];
   const itensVisiveis = informacoesVisiveis ? items : items.filter(({ to }) => to === '/' || to === '/caixa');
 
   return (
     <>
-      {/* Barra inferior — telas estreitas (celular) */}
       <nav className="fixed bottom-0 left-0 right-0 z-40 border-t border-line bg-paper-raised shadow-[0_-2px_10px_rgba(36,26,18,0.08)] md:hidden">
         <div className="mx-auto flex max-w-xl items-center justify-between px-1 py-2">
           {itensVisiveis.map(({ to, label, Icon }) => (
@@ -46,7 +44,6 @@ export default function BottomNav({ informacoesVisiveis }: { informacoesVisiveis
         </div>
       </nav>
 
-      {/* Coluna lateral — telas médias e largas (tablet/desktop) */}
       <aside className="sticky top-0 hidden h-screen w-20 shrink-0 flex-col items-center gap-1 border-r border-line bg-paper-raised py-6 md:flex lg:w-56 lg:items-stretch lg:px-4">
         <div className="mb-6 flex items-center gap-2 px-1 lg:px-2">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-ledger text-paper">
