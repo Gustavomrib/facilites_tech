@@ -18,7 +18,7 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppDataProvider, useAppData } from './AppDataContext';
 import { STORAGE_KEY } from '../lib/storage';
-import type { CompanyConfig } from '../types';
+import type { CompanyConfig, DespesaFixa } from '../types';
 
 /**
  * Sobre os testes de sincronização entre abas (evento "storage"): num
@@ -55,6 +55,17 @@ function configPadrao(overrides: Partial<CompanyConfig> = {}): CompanyConfig {
 
 function renderAppData() {
   return renderHook(() => useAppData(), { wrapper: AppDataProvider });
+}
+
+function despesaFixaMensal(overrides: Partial<DespesaFixa> = {}): DespesaFixa {
+  return {
+    id: 'despesa-1',
+    nome: 'Aluguel',
+    valor: 900,
+    recorrencia: 'mensal',
+    diaVencimento: 10,
+    ...overrides,
+  };
 }
 
 /** Mocka o instante atual — passe um horário com offset explícito (ex: -03:00) para o teste ser determinístico independente do fuso da máquina que roda. */
@@ -461,6 +472,94 @@ describe('AppDataContext', () => {
 
       expect(result.current.data.contas).toHaveLength(1);
       expect(result.current.data.contas[0].descricao).toBe('Original');
+    });
+  });
+
+  describe('geração automática de Conta a partir de despesa fixa mensal', () => {
+    it('cria uma conta a pagar para o mês corrente no dia configurado', () => {
+      mockarAgora('2026-08-03T10:00:00-03:00');
+      const { result } = renderAppData();
+
+      act(() => {
+        result.current.setConfig(configPadrao({ despesasFixas: [despesaFixaMensal()] }));
+      });
+
+      const geradas = result.current.data.contas.filter((c) => c.origemDespesaFixaId === 'despesa-1');
+      expect(geradas).toHaveLength(1);
+      expect(geradas[0]).toMatchObject({
+        tipo: 'pagar',
+        descricao: 'Aluguel',
+        valor: 900,
+        vencimento: '2026-08-10',
+        quitado: false,
+      });
+    });
+
+    it('não duplica a conta ao reconfigurar despesas fixas de novo', () => {
+      mockarAgora('2026-08-03T10:00:00-03:00');
+      const { result } = renderAppData();
+
+      act(() => {
+        result.current.setConfig(configPadrao({ despesasFixas: [despesaFixaMensal()] }));
+      });
+      act(() => {
+        result.current.setConfig(configPadrao({ despesasFixas: [despesaFixaMensal()] }));
+      });
+
+      const geradas = result.current.data.contas.filter((c) => c.origemDespesaFixaId === 'despesa-1');
+      expect(geradas).toHaveLength(1);
+    });
+
+    it('clampa o dia de vencimento para o último dia válido do mês (fevereiro de 2026 tem 28 dias)', () => {
+      mockarAgora('2026-02-03T10:00:00-03:00');
+      const { result } = renderAppData();
+
+      act(() => {
+        result.current.setConfig(configPadrao({ despesasFixas: [despesaFixaMensal({ diaVencimento: 31 })] }));
+      });
+
+      const gerada = result.current.data.contas.find((c) => c.origemDespesaFixaId === 'despesa-1');
+      expect(gerada?.vencimento).toBe('2026-02-28');
+    });
+
+    it('não gera conta para despesa fixa "semanal"', () => {
+      mockarAgora('2026-08-03T10:00:00-03:00');
+      const { result } = renderAppData();
+
+      act(() => {
+        result.current.setConfig(
+          configPadrao({ despesasFixas: [despesaFixaMensal({ recorrencia: 'semanal', diaVencimento: undefined })] }),
+        );
+      });
+
+      expect(result.current.data.contas.filter((c) => c.origemDespesaFixaId === 'despesa-1')).toHaveLength(0);
+    });
+
+    it('não gera conta para despesa mensal sem diaVencimento (dado legado, migração não automática)', () => {
+      mockarAgora('2026-08-03T10:00:00-03:00');
+      const { result } = renderAppData();
+
+      act(() => {
+        result.current.setConfig(configPadrao({ despesasFixas: [despesaFixaMensal({ diaVencimento: undefined })] }));
+      });
+
+      expect(result.current.data.contas.filter((c) => c.origemDespesaFixaId === 'despesa-1')).toHaveLength(0);
+    });
+
+    it('remover a despesa fixa depois não apaga a conta já gerada (nada retroativo)', () => {
+      mockarAgora('2026-08-03T10:00:00-03:00');
+      const { result } = renderAppData();
+
+      act(() => {
+        result.current.setConfig(configPadrao({ despesasFixas: [despesaFixaMensal()] }));
+      });
+      expect(result.current.data.contas.filter((c) => c.origemDespesaFixaId === 'despesa-1')).toHaveLength(1);
+
+      act(() => {
+        result.current.setConfig({ ...result.current.data.config!, despesasFixas: [] });
+      });
+
+      expect(result.current.data.contas.filter((c) => c.origemDespesaFixaId === 'despesa-1')).toHaveLength(1);
     });
   });
 });

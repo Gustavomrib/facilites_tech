@@ -17,6 +17,7 @@ export default function Configuracoes() {
   const [novaDespesaNome, setNovaDespesaNome] = useState('');
   const [novaDespesaValor, setNovaDespesaValor] = useState('');
   const [novaDespesaRecorrencia, setNovaDespesaRecorrencia] = useState<Recorrencia>('mensal');
+  const [novaDespesaDia, setNovaDespesaDia] = useState('');
   const [darkMode, setDarkMode] = useDarkMode();
   const [importErro, setImportErro] = useState<string | null>(null);
   const [importPendente, setImportPendente] = useState<AppData | null>(null);
@@ -33,15 +34,23 @@ export default function Configuracoes() {
     const valor = parseMoney(novaDespesaValor);
     if (!novaDespesaNome.trim() || !valor || valor <= 0) return;
 
+    let diaVencimento: number | undefined;
+    if (novaDespesaRecorrencia === 'mensal') {
+      diaVencimento = Number(novaDespesaDia);
+      if (!novaDespesaDia || Number.isNaN(diaVencimento) || diaVencimento < 1 || diaVencimento > 31) return;
+    }
+
     const despesa: DespesaFixa = {
       id: uid(),
       nome: novaDespesaNome.trim(),
       valor,
       recorrencia: novaDespesaRecorrencia,
+      diaVencimento,
     };
     salvarCampo({ despesasFixas: [...config.despesasFixas, despesa] });
     setNovaDespesaNome('');
     setNovaDespesaValor('');
+    setNovaDespesaDia('');
   };
 
   const removerDespesaFixa = (id: string) => {
@@ -205,19 +214,34 @@ export default function Configuracoes() {
             {config.despesasFixas.length === 0 && (
               <p className="text-sm text-ink-soft">Nenhuma despesa fixa cadastrada.</p>
             )}
-            {config.despesasFixas.map((d) => (
-              <li key={d.id} className="flex items-center justify-between gap-2 rounded-lg bg-paper p-2 text-sm">
-                <span className="min-w-0 truncate text-ink">
-                  {d.nome} <span className="text-ink-soft">({d.recorrencia})</span>
-                </span>
-                <div className="flex shrink-0 items-center gap-3">
-                  <span className="font-ledger font-medium tabular-nums text-ink">{formatCurrency(d.valor)}</span>
-                  <button onClick={() => removerDespesaFixa(d.id)} className="text-ink-soft hover:text-stamp">
-                    <Trash size={16} />
-                  </button>
-                </div>
-              </li>
-            ))}
+            {config.despesasFixas.map((d) => {
+              const faltaDia = d.recorrencia === 'mensal' && !d.diaVencimento;
+              return (
+                <li key={d.id} className="rounded-lg bg-paper p-2 text-sm">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="min-w-0 truncate text-ink">
+                      {d.nome}{' '}
+                      <span className="text-ink-soft">
+                        ({d.recorrencia}
+                        {d.diaVencimento ? `, dia ${d.diaVencimento}` : ''})
+                      </span>
+                    </span>
+                    <div className="flex shrink-0 items-center gap-3">
+                      <span className="font-ledger font-medium tabular-nums text-ink">{formatCurrency(d.valor)}</span>
+                      <button onClick={() => removerDespesaFixa(d.id)} className="text-ink-soft hover:text-stamp">
+                        <Trash size={16} />
+                      </button>
+                    </div>
+                  </div>
+                  {faltaDia && (
+                    <p className="mt-1 text-[11px] text-brass">
+                      Sem dia de vencimento definido — não gera conta a pagar automática. Remova e cadastre de novo
+                      informando o dia.
+                    </p>
+                  )}
+                </li>
+              );
+            })}
           </ul>
           <form onSubmit={adicionarDespesaFixa} className="space-y-2">
             <input
@@ -244,14 +268,30 @@ export default function Configuracoes() {
                 <option value="mensal">Mensal</option>
                 <option value="semanal">Semanal</option>
               </select>
-              <button
-                type="submit"
-                className="flex shrink-0 items-center gap-1 rounded-lg bg-ledger/10 px-3 text-sm font-medium text-ledger-strong dark:text-ledger"
-              >
-                <Plus size={16} /> Add
-              </button>
             </div>
+            {novaDespesaRecorrencia === 'mensal' && (
+              <input
+                type="number"
+                min={1}
+                max={31}
+                value={novaDespesaDia}
+                onChange={(e) => setNovaDespesaDia(e.target.value)}
+                placeholder="Dia do vencimento (1-31)"
+                className="w-full rounded-lg border border-line bg-paper p-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-ledger/30"
+              />
+            )}
+            <button
+              type="submit"
+              className="flex w-full items-center justify-center gap-1 rounded-lg bg-ledger/10 py-2 text-sm font-medium text-ledger-strong dark:text-ledger"
+            >
+              <Plus size={16} /> Adicionar despesa
+            </button>
           </form>
+          {novaDespesaRecorrencia === 'mensal' && (
+            <p className="mt-2 text-xs text-ink-soft">
+              No dia informado, uma conta a pagar é criada automaticamente todo mês.
+            </p>
+          )}
         </section>
 
         <section className="rounded-2xl border border-line bg-paper-raised p-4 shadow-sm">

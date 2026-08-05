@@ -11,6 +11,13 @@ export interface DespesaFixa {
   nome: string;
   valor: number;
   recorrencia: Recorrencia;
+  /**
+   * Dia do mês (1-31) em que a conta a pagar correspondente deve vencer.
+   * Só se aplica a recorrencia 'mensal' — despesas 'semanal' e despesas
+   * cadastradas antes deste campo existir não têm esse dado e por isso não
+   * geram conta automaticamente (ver AppDataContext.tsx).
+   */
+  diaVencimento?: number;
 }
 
 export interface CompanyConfig {
@@ -66,6 +73,7 @@ export interface Conta {
   quitado: boolean;
   dataQuitacao?: string; // ISO date — quando a conta foi de fato paga/recebida (preenchido ao dar baixa)
   origemVendaId?: string; // preenchido quando a conta a receber nasce de uma venda "fiado"
+  origemDespesaFixaId?: string; // preenchido quando a conta a pagar foi gerada automaticamente a partir de uma despesa fixa mensal
   clienteId?: string; // preenchido quando a conta a receber está vinculada a um cliente cadastrado
 }
 

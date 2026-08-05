@@ -81,6 +81,14 @@ function diffDias(deIso: string, paraIso: string): number {
   return Math.round((para.getTime() - de.getTime()) / 86_400_000);
 }
 
+/** Monta a data de vencimento de um mês (YYYY-MM) num dia específico, "clampando" para o último dia válido do mês se o dia informado não existir nele (ex: 31 em fevereiro). */
+function dataVencimentoNoMes(anoMes: string, dia: number): string {
+  const [ano, mes] = anoMes.split('-').map(Number);
+  const ultimoDiaDoMes = new Date(ano, mes, 0).getDate();
+  const diaValido = Math.min(Math.max(Math.round(dia), 1), ultimoDiaDoMes);
+  return `${anoMes}-${String(diaValido).padStart(2, '0')}`;
+}
+
 export function AppDataProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<AppData>(() => loadData());
 
@@ -132,6 +140,54 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     window.addEventListener('storage', handleStorageChange);
     return () => window.removeEventListener('storage', handleStorageChange);
   }, []);
+
+  useEffect(() => {
+    // Garante que toda despesa fixa mensal (com dia de vencimento definido) tenha
+    // uma Conta a pagar gerada para o mês corrente — roda de novo sempre que
+    // despesasFixas ou contas mudam (e também quando o app é reaberto num mês
+    // novo), então se auto-corrige sem precisar de cron/job em segundo plano.
+    //
+    // Só olha o mês ATUAL: não gera contas de meses futuros com antecedência.
+    // Despesas 'semanal' e despesas antigas sem diaVencimento são ignoradas de
+    // propósito (não têm informação suficiente para saber quando vencer).
+    //
+    // Editar ou remover a despesa fixa NUNCA altera retroativamente contas já
+    // geradas — elas viram registros financeiros independentes a partir daí,
+    // editáveis/removíveis normalmente via editarConta/removerConta.
+    const mesAtual = todayISO().slice(0, 7);
+    const despesasFixas = data.config?.despesasFixas ?? [];
+    const pendentes = despesasFixas.filter(
+      (d) =>
+        d.recorrencia === 'mensal' &&
+        d.diaVencimento !== undefined &&
+        !data.contas.some((c) => c.origemDespesaFixaId === d.id && c.vencimento.slice(0, 7) === mesAtual),
+    );
+
+    if (pendentes.length === 0) return;
+
+    // Não é o caso de "espelhar estado local" que a regra abaixo normalmente evita: depende de
+    // todayISO() (leitura impura do relógio) e grava um registro financeiro persistido (Conta), não
+    // um valor de UI. Converge sozinho: assim que a conta existe, "pendentes" fica vazio e o efeito
+    // para de disparar setState.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setData((prev) => ({
+      ...prev,
+      contas: [
+        ...prev.contas,
+        ...pendentes.map(
+          (d): Conta => ({
+            id: uid(),
+            tipo: 'pagar',
+            descricao: d.nome,
+            valor: d.valor,
+            vencimento: dataVencimentoNoMes(mesAtual, d.diaVencimento!),
+            quitado: false,
+            origemDespesaFixaId: d.id,
+          }),
+        ),
+      ],
+    }));
+  }, [data.config?.despesasFixas, data.contas]);
 
   const setConfig = (config: CompanyConfig) => {
     setData((prev) => ({ ...prev, config }));

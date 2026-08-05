@@ -30,6 +30,7 @@ export default function Onboarding() {
   const [novaDespesaNome, setNovaDespesaNome] = useState('');
   const [novaDespesaValor, setNovaDespesaValor] = useState('');
   const [novaDespesaRecorrencia, setNovaDespesaRecorrencia] = useState<Recorrencia>('mensal');
+  const [novaDespesaDia, setNovaDespesaDia] = useState('');
   const [viewPeriod, setViewPeriod] = useState<ViewPeriod>('day');
   const [resumoSemanal, setResumoSemanal] = useState(true);
   const [fechamentoMensal, setFechamentoMensal] = useState(true);
@@ -42,12 +43,20 @@ export default function Onboarding() {
   const adicionarDespesa = () => {
     const valor = parseMoney(novaDespesaValor);
     if (!novaDespesaNome.trim() || !valor || valor <= 0) return;
+
+    let diaVencimento: number | undefined;
+    if (novaDespesaRecorrencia === 'mensal') {
+      diaVencimento = Number(novaDespesaDia);
+      if (!novaDespesaDia || Number.isNaN(diaVencimento) || diaVencimento < 1 || diaVencimento > 31) return;
+    }
+
     setDespesasFixas((prev) => [
       ...prev,
-      { id: uid(), nome: novaDespesaNome.trim(), valor, recorrencia: novaDespesaRecorrencia },
+      { id: uid(), nome: novaDespesaNome.trim(), valor, recorrencia: novaDespesaRecorrencia, diaVencimento },
     ]);
     setNovaDespesaNome('');
     setNovaDespesaValor('');
+    setNovaDespesaDia('');
   };
 
   const removerDespesa = (id: string) => {
@@ -204,7 +213,11 @@ export default function Onboarding() {
                 {despesasFixas.map((d) => (
                   <li key={d.id} className="flex items-center justify-between gap-2 rounded-lg bg-paper p-2 text-sm">
                     <span className="min-w-0 truncate text-ink">
-                      {d.nome} <span className="text-ink-soft">({d.recorrencia})</span>
+                      {d.nome}{' '}
+                      <span className="text-ink-soft">
+                        ({d.recorrencia}
+                        {d.diaVencimento ? `, dia ${d.diaVencimento}` : ''})
+                      </span>
                     </span>
                     <div className="flex shrink-0 items-center gap-2">
                       <span className="font-ledger font-medium tabular-nums text-ink">{formatCurrency(d.valor)}</span>
@@ -240,15 +253,31 @@ export default function Onboarding() {
                     <option value="mensal">Mensal</option>
                     <option value="semanal">Semanal</option>
                   </select>
-                  <button
-                    type="button"
-                    onClick={adicionarDespesa}
-                    className="flex shrink-0 items-center gap-1 rounded-lg bg-ledger/10 px-3 text-sm font-medium text-ledger-strong"
-                  >
-                    <Plus size={16} /> Add
-                  </button>
                 </div>
+                {novaDespesaRecorrencia === 'mensal' && (
+                  <input
+                    type="number"
+                    min={1}
+                    max={31}
+                    value={novaDespesaDia}
+                    onChange={(e) => setNovaDespesaDia(e.target.value)}
+                    placeholder="Dia do vencimento (1-31)"
+                    className="w-full rounded-lg border border-line bg-paper p-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-ledger/30"
+                  />
+                )}
+                <button
+                  type="button"
+                  onClick={adicionarDespesa}
+                  className="flex w-full items-center justify-center gap-1 rounded-lg bg-ledger/10 py-2 text-sm font-medium text-ledger-strong"
+                >
+                  <Plus size={16} /> Adicionar despesa
+                </button>
               </div>
+              {novaDespesaRecorrencia === 'mensal' && (
+                <p className="text-xs text-ink-soft">
+                  No dia informado, uma conta a pagar é criada automaticamente todo mês.
+                </p>
+              )}
             </div>
           )}
 
