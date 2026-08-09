@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Plus,
   Lightning,
@@ -10,35 +10,54 @@ import {
   WarningCircle,
   PencilSimple,
   Trash,
+  Phone,
+  ArrowsClockwise,
 } from '@phosphor-icons/react';
 import { useAppData } from '../context/AppDataContext';
-import { formatCurrency, formatDate, parseMoney, todayISO } from '../lib/format';
+import { formatCurrency, formatDate, parseMoney, sanitizeMoneyInput, todayISO } from '../lib/format';
 import Modal from '../components/Modal';
-import type { Conta, LancamentoManual, TipoConta } from '../types';
+import type { Cliente, Conta, FormaPagamento, LancamentoManual, TipoConta } from '../types';
+import FinanceNav from '../components/FinanceNav';
 
 type ItemParaExcluir = { tipo: 'conta' | 'lancamento'; id: string; label: string };
+type BaixaPendente = { tipo: 'fiado' | 'fixa'; id: string; nome: string; valor: number };
 
 export default function Financas() {
-  const { data, addConta, editarConta, removerConta, marcarContaQuitada, addLancamentoManual, editarLancamentoManual, removerLancamentoManual } =
-    useAppData();
+  const {
+    data,
+    addConta,
+    editarConta,
+    removerConta,
+    marcarContaQuitada,
+    editarLancamentoManual,
+    removerLancamentoManual,
+    editarCliente,
+    baixarFiado,
+    baixarDespesaFixa,
+  } = useAppData();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const tabInicial = searchParams.get('tab') === 'receber' ? 'receber' : searchParams.get('tab') === 'pagar' ? 'pagar' : null;
-  const [aba, setAba] = useState<TipoConta>(tabInicial ?? 'pagar');
+  const aba: TipoConta = searchParams.get('tab') === 'receber' ? 'receber' : 'pagar';
   const [modalAberto, setModalAberto] = useState(false);
-  const [entradaModalAberto, setEntradaModalAberto] = useState(false);
-  const [entradaDescricao, setEntradaDescricao] = useState('');
-  const [entradaValor, setEntradaValor] = useState('');
-  const [entradaData, setEntradaData] = useState(todayISO());
   const [contaEditando, setContaEditando] = useState<Conta | null>(null);
   const [lancamentoEditando, setLancamentoEditando] = useState<LancamentoManual | null>(null);
   const [itemParaExcluir, setItemParaExcluir] = useState<ItemParaExcluir | null>(null);
+  const [baixaPendente, setBaixaPendente] = useState<BaixaPendente | null>(null);
+  const [formaBaixa, setFormaBaixa] = useState<Exclude<FormaPagamento, 'fiado'>>('dinheiro');
+  const [baixando, setBaixando] = useState(false);
+  const [baixaErro, setBaixaErro] = useState<string | null>(null);
 
   const mesAtual = todayISO().slice(0, 7);
+  const gastosFixos = useMemo(() => data.config?.despesasFixas ?? [], [data.config?.despesasFixas]);
+
+  const totalFixosMensal = useMemo(
+    () => gastosFixos.reduce((total, gasto) => total + gasto.valor * (gasto.recorrencia === 'semanal' ? 4 : 1), 0),
+    [gastosFixos],
+  );
 
   const clientesPorId = useMemo(() => {
-    const map = new Map<string, string>();
-    data.clientes.forEach((c) => map.set(c.id, c.nome));
+    const map = new Map<string, Cliente>();
+    data.clientes.forEach((c) => map.set(c.id, c));
     return map;
   }, [data.clientes]);
 
@@ -50,7 +69,7 @@ export default function Financas() {
   const lancamentosDaAba = useMemo(
     () =>
       data.lancamentosManuais
-        .filter((l) => (aba === 'pagar' ? l.tipo === 'saida' : l.tipo === 'entrada'))
+        .filter((l) => aba === 'pagar' && l.tipo === 'saida')
         .sort((a, b) => b.data.localeCompare(a.data)),
     [data.lancamentosManuais, aba],
   );
@@ -59,18 +78,27 @@ export default function Financas() {
     () =>
       contasDaAba
         .filter((c) => c.vencimento.slice(0, 7) === mesAtual)
-        .reduce((sum, c) => sum + c.valor, 0),
-    [contasDaAba, mesAtual],
+        .reduce((sum, c) => sum + c.valor, 0) +
+      lancamentosDaAba
+        .filter((lancamento) => lancamento.data.slice(0, 7) === mesAtual)
+        .reduce((sum, lancamento) => sum + lancamento.valor, 0) +
+      (aba === 'pagar' ? totalFixosMensal : 0),
+    [aba, contasDaAba, lancamentosDaAba, mesAtual, totalFixosMensal],
   );
 
   const saldoPorCliente = useMemo(() => {
     if (aba !== 'receber') return [];
-    const mapa = new Map<string, { nome: string; total: number }>();
+    const mapa = new Map<string, { id: string; nome: string; telefone?: string; total: number }>();
     data.contas
       .filter((c) => c.tipo === 'receber' && !c.quitado && c.clienteId)
       .forEach((c) => {
-        const nome = clientesPorId.get(c.clienteId!) ?? 'Cliente';
-        const atual = mapa.get(c.clienteId!) ?? { nome, total: 0 };
+        const cliente = clientesPorId.get(c.clienteId!);
+        const atual = mapa.get(c.clienteId!) ?? {
+          id: c.clienteId!,
+          nome: cliente?.nome ?? 'Cliente',
+          telefone: cliente?.telefone,
+          total: 0,
+        };
         atual.total += c.valor;
         mapa.set(c.clienteId!, atual);
       });
@@ -90,24 +118,6 @@ export default function Financas() {
     setModalAberto(false);
   };
 
-  const handleEntradaSubmit = (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const valor = parseMoney(entradaValor);
-
-    if (!entradaDescricao.trim() || valor <= 0) return;
-
-    addLancamentoManual({
-      tipo: 'entrada',
-      descricao: entradaDescricao.trim(),
-      valor,
-      data: entradaData,
-    });
-    setEntradaModalAberto(false);
-    setEntradaDescricao('');
-    setEntradaValor('');
-    setEntradaData(todayISO());
-  };
-
   const handleEditarContaSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!contaEditando) return;
@@ -115,10 +125,18 @@ export default function Financas() {
     const descricao = String(form.get('descricao') ?? '').trim();
     const valor = parseMoney(String(form.get('valor') ?? '0'));
     const vencimento = String(form.get('vencimento') ?? contaEditando.vencimento);
+    const clienteNome = String(form.get('clienteNome') ?? '').trim();
+    const clienteTelefone = String(form.get('clienteTelefone') ?? '').trim();
 
-    if (!descricao || valor <= 0) return;
+    if (!descricao || valor <= 0 || (contaEditando.clienteId && !clienteNome)) return;
 
     editarConta(contaEditando.id, { descricao, valor, vencimento });
+    if (contaEditando.clienteId) {
+      editarCliente(contaEditando.clienteId, {
+        nome: clienteNome,
+        telefone: clienteTelefone || undefined,
+      });
+    }
     setContaEditando(null);
   };
 
@@ -146,36 +164,62 @@ export default function Financas() {
     setItemParaExcluir(null);
   };
 
+  const abrirConfirmacaoBaixa = (baixa: BaixaPendente) => {
+    setBaixaPendente(baixa);
+    setFormaBaixa('dinheiro');
+    setBaixaErro(null);
+  };
+
+  const confirmarBaixa = async () => {
+    if (!baixaPendente) return;
+    setBaixando(true);
+    setBaixaErro(null);
+    try {
+      if (baixaPendente.tipo === 'fiado') {
+        await baixarFiado(baixaPendente.id, formaBaixa);
+      } else {
+        await baixarDespesaFixa(baixaPendente.id, formaBaixa);
+      }
+      setBaixaPendente(null);
+    } catch (error) {
+      setBaixaErro(error instanceof Error ? error.message : 'Não foi possível dar baixa.');
+    } finally {
+      setBaixando(false);
+    }
+  };
+
   const hoje = todayISO();
   const mostrarPainelClientes = aba === 'receber' && saldoPorCliente.length > 0;
 
   return (
     <div className="fade-in">
-      <h2 className="mb-4 font-display text-xl font-bold">Financeiro</h2>
+      <h2 className="font-display text-2xl font-bold text-ink">Financeiro</h2>
+      <p className="mt-1 text-sm text-ink-soft">Suas principais contas aqui!</p>
+      <FinanceNav />
 
       <div className="mb-6 flex rounded-xl bg-line/40 p-1">
-        <button
-          onClick={() => setAba('pagar')}
+        <Link
+          to="/financas?tab=pagar"
           className={`flex-1 rounded-lg py-2 text-sm font-medium transition ${
             aba === 'pagar' ? 'bg-paper-raised text-ink shadow-sm' : 'text-ink-soft'
-          }`}
+          } text-center`}
         >
           A Pagar
-        </button>
-        <button
-          onClick={() => setAba('receber')}
+        </Link>
+        <Link
+          to="/financas?tab=receber"
           className={`flex-1 rounded-lg py-2 text-sm font-medium transition ${
             aba === 'receber' ? 'bg-paper-raised text-ink shadow-sm' : 'text-ink-soft'
-          }`}
+          } text-center`}
         >
           A Receber (Fiado)
-        </button>
+        </Link>
       </div>
 
       <div className="mb-4 flex items-end justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate text-xs font-semibold uppercase tracking-wide text-ink-soft">
-            Total {aba === 'pagar' ? 'a Pagar' : 'a Receber'} (Mês)
+            {aba === 'pagar' ? 'Total previsto' : 'Total a Receber'} (Mês)
           </p>
           <p className={`font-ledger text-2xl font-bold tabular-nums ${aba === 'pagar' ? 'text-stamp' : 'text-brass'}`}>
             {formatCurrency(totalMes)}
@@ -188,20 +232,35 @@ export default function Financas() {
           >
             <Plus size={16} /> Despesa
           </button>
-        ) : (
-          <button
-            onClick={() => setEntradaModalAberto(true)}
-            className="flex shrink-0 items-center gap-1 text-sm font-medium text-ledger-strong dark:text-ledger"
-          >
-            <Plus size={16} /> Entrada
-          </button>
-        )}
+        ) : null}
       </div>
 
       <div className={mostrarPainelClientes ? 'lg:grid lg:grid-cols-3 lg:items-start lg:gap-6' : ''}>
         <div className={mostrarPainelClientes ? 'min-w-0 lg:col-span-2' : 'min-w-0'}>
+          {aba === 'pagar' && gastosFixos.length > 0 && (
+            <div className="mb-4 rounded-2xl border border-brass/25 bg-brass/5 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="mb-1 flex items-center gap-2 text-brass">
+                    <ArrowsClockwise size={17} weight="bold" />
+                    <h3 className="text-xs font-bold uppercase tracking-wide">Gastos fixos</h3>
+                  </div>
+                  <p className="text-xs text-ink-soft">
+                    {gastosFixos.length} gasto(s) recorrente(s) · semanais calculados em 4 vezes no mês
+                  </p>
+                </div>
+                <div className="shrink-0 text-right">
+                  <p className="font-ledger text-sm font-bold tabular-nums text-brass">{formatCurrency(totalFixosMensal)}</p>
+                  <Link to="/configuracoes" className="text-[11px] font-medium text-brass hover:underline">
+                    Gerenciar
+                  </Link>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="overflow-hidden rounded-2xl border border-line bg-paper-raised shadow-sm">
-            {contasDaAba.length === 0 && lancamentosDaAba.length === 0 ? (
+            {contasDaAba.length === 0 && lancamentosDaAba.length === 0 && (aba !== 'pagar' || gastosFixos.length === 0) ? (
               <div className="flex flex-col items-center px-4 py-10 text-center">
                 <div className={`mb-3 flex h-12 w-12 items-center justify-center rounded-full ${aba === 'pagar' ? 'bg-stamp/10 text-stamp' : 'bg-brass/10 text-brass'}`}>
                   {aba === 'pagar' ? <Receipt size={24} /> : <HandCoins size={24} />}
@@ -212,15 +271,17 @@ export default function Financas() {
                 <p className="mb-4 text-xs text-ink-soft">
                   {aba === 'pagar'
                     ? 'Cadastre uma despesa para acompanhar seus pagamentos.'
-                    : 'Registre entradas manuais ou use o Caixa para vendas fiado.'}
+                    : 'As vendas fiado registradas no Caixa aparecem aqui.'}
                 </p>
                 <div className="flex flex-col gap-3 sm:flex-row sm:justify-center">
-                  <button
-                    onClick={() => (aba === 'pagar' ? setModalAberto(true) : setEntradaModalAberto(true))}
-                    className="flex items-center justify-center gap-1 rounded-lg bg-ledger px-4 py-2 text-sm font-medium text-paper"
-                  >
-                    <Plus size={16} /> {aba === 'pagar' ? 'Nova Despesa' : 'Nova Entrada'}
-                  </button>
+                  {aba === 'pagar' && (
+                    <button
+                      onClick={() => setModalAberto(true)}
+                      className="flex items-center justify-center gap-1 rounded-lg bg-ledger px-4 py-2 text-sm font-medium text-paper"
+                    >
+                      <Plus size={16} /> Nova Despesa
+                    </button>
+                  )}
                   {aba === 'receber' && (
                     <button
                       onClick={() => navigate('/caixa')}
@@ -233,10 +294,39 @@ export default function Financas() {
               </div>
             ) : (
               <ul className="divide-y divide-line">
+                {aba === 'pagar' &&
+                  gastosFixos.map((gasto) => (
+                    <li key={`fixo-${gasto.id}`} className="flex items-center justify-between gap-3 bg-brass/[0.03] p-4">
+                      <div className="flex min-w-0 flex-1 items-center gap-3">
+                        <div className="shrink-0 rounded-lg bg-brass/10 p-2 text-brass">
+                          <ArrowsClockwise size={20} />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="truncate font-medium text-ink">{gasto.nome}</p>
+                          <p className="mt-0.5 text-[11px] font-medium capitalize text-brass">
+                            Gasto fixo · {gasto.recorrencia}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <p className="font-ledger font-bold tabular-nums text-ink">{formatCurrency(gasto.valor)}</p>
+                        {gasto.quitado ? (
+                          <span className="stamp mt-1 text-ledger-strong dark:text-ledger">Pago</span>
+                        ) : (
+                          <button
+                            onClick={() => abrirConfirmacaoBaixa({ tipo: 'fixa', id: gasto.id, nome: gasto.nome, valor: gasto.valor })}
+                            className="mt-1 rounded bg-ledger/10 px-2 py-1 text-xs font-medium text-ledger-strong dark:text-ledger"
+                          >
+                            Dar Baixa
+                          </button>
+                        )}
+                      </div>
+                    </li>
+                  ))}
                 {contasDaAba.map((conta) => {
                   const venceHoje = conta.vencimento === hoje && !conta.quitado;
                   const atrasada = !conta.quitado && conta.vencimento < hoje;
-                  const nomeCliente = conta.clienteId ? clientesPorId.get(conta.clienteId) : undefined;
+                  const cliente = conta.clienteId ? clientesPorId.get(conta.clienteId) : undefined;
                   return (
                     <li
                       key={conta.id}
@@ -266,9 +356,14 @@ export default function Financas() {
                         </div>
                         <div className="min-w-0">
                           <p className={`truncate font-medium text-ink ${conta.quitado ? 'line-through' : ''}`}>
-                            {nomeCliente ?? conta.descricao}
+                            {cliente?.nome ?? conta.descricao}
                           </p>
-                          {nomeCliente && <p className="truncate text-[11px] text-ink-soft">{conta.descricao}</p>}
+                          {cliente && <p className="truncate text-[11px] text-ink-soft">{conta.descricao}</p>}
+                          {cliente?.telefone && (
+                            <p className="mt-0.5 flex items-center gap-1 truncate text-[11px] text-ink-soft">
+                              <Phone size={11} className="shrink-0" /> {cliente.telefone}
+                            </p>
+                          )}
                           <div className="mt-1">
                             {conta.quitado ? (
                               <span className="stamp text-ledger-strong dark:text-ledger">
@@ -291,7 +386,18 @@ export default function Financas() {
                         <div className="flex items-center gap-1">
                           {!conta.quitado && (
                             <button
-                              onClick={() => marcarContaQuitada(conta.id)}
+                              onClick={() => {
+                                if (conta.tipo === 'receber') {
+                                  abrirConfirmacaoBaixa({
+                                    tipo: 'fiado',
+                                    id: conta.id,
+                                    nome: cliente?.nome ?? conta.descricao,
+                                    valor: conta.valor,
+                                  });
+                                } else {
+                                  marcarContaQuitada(conta.id);
+                                }
+                              }}
                               className="rounded bg-ledger/10 px-2 py-1 text-xs font-medium text-ledger-strong dark:text-ledger"
                             >
                               Dar Baixa
@@ -361,8 +467,15 @@ export default function Financas() {
               </div>
               <ul className="divide-y divide-line">
                 {saldoPorCliente.map((c) => (
-                  <li key={c.nome} className="flex items-center justify-between gap-2 py-1.5 text-sm">
-                    <span className="min-w-0 truncate text-ink">{c.nome}</span>
+                  <li key={c.id} className="flex items-center justify-between gap-2 py-2 text-sm">
+                    <div className="min-w-0">
+                      <p className="truncate text-ink">{c.nome}</p>
+                      {c.telefone && (
+                        <p className="flex items-center gap-1 truncate text-[11px] text-ink-soft">
+                          <Phone size={11} className="shrink-0" /> {c.telefone}
+                        </p>
+                      )}
+                    </div>
                     <span className="shrink-0 font-ledger font-bold tabular-nums text-brass">{formatCurrency(c.total)}</span>
                   </li>
                 ))}
@@ -390,6 +503,9 @@ export default function Financas() {
               name="valor"
               type="text"
               inputMode="decimal"
+              onInput={(e) => {
+                e.currentTarget.value = sanitizeMoneyInput(e.currentTarget.value);
+              }}
               required
               placeholder="Ex: 130,00"
               className="w-full rounded-lg border border-line bg-paper p-2 text-ink focus:outline-none focus:ring-2 focus:ring-ledger/30"
@@ -411,50 +527,41 @@ export default function Financas() {
         </form>
       </Modal>
 
-      <Modal open={entradaModalAberto} onClose={() => setEntradaModalAberto(false)} title="Nova Entrada">
-        <form className="space-y-4" onSubmit={handleEntradaSubmit}>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-ink-soft">Descrição</label>
-            <input
-              value={entradaDescricao}
-              onChange={(e) => setEntradaDescricao(e.target.value)}
-              type="text"
-              required
-              placeholder="Ex: Venda avulsa"
-              className="w-full rounded-lg border border-line bg-paper p-2 text-ink focus:outline-none focus:ring-2 focus:ring-ledger/30"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-ink-soft">Valor</label>
-            <input
-              value={entradaValor}
-              onChange={(e) => setEntradaValor(e.target.value)}
-              type="text"
-              inputMode="decimal"
-              required
-              placeholder="Ex: 130,00"
-              className="w-full rounded-lg border border-line bg-paper p-2 text-ink focus:outline-none focus:ring-2 focus:ring-ledger/30"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-ink-soft">Data</label>
-            <input
-              value={entradaData}
-              onChange={(e) => setEntradaData(e.target.value)}
-              type="date"
-              required
-              className="w-full rounded-lg border border-line bg-paper p-2 text-ink focus:outline-none focus:ring-2 focus:ring-ledger/30"
-            />
-          </div>
-          <button type="submit" className="mt-2 w-full rounded-lg bg-ledger py-2.5 font-bold text-paper transition hover:bg-ledger-strong">
-            Salvar Entrada
-          </button>
-        </form>
-      </Modal>
-
-      <Modal open={contaEditando !== null} onClose={() => setContaEditando(null)} title="Editar Conta">
+      <Modal
+        open={contaEditando !== null}
+        onClose={() => setContaEditando(null)}
+        title={contaEditando?.clienteId ? 'Editar Conta e Cliente' : 'Editar Conta'}
+      >
         {contaEditando && (
           <form className="space-y-4" onSubmit={handleEditarContaSubmit} key={contaEditando.id}>
+            {contaEditando.clienteId && (() => {
+              const cliente = clientesPorId.get(contaEditando.clienteId);
+              return (
+                <fieldset className="space-y-3 rounded-xl border border-line bg-line/10 p-3">
+                  <legend className="px-1 text-xs font-bold uppercase tracking-wide text-ink-soft">Dados do cliente</legend>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-ink-soft">Nome</label>
+                    <input
+                      name="clienteNome"
+                      type="text"
+                      required
+                      defaultValue={cliente?.nome ?? ''}
+                      className="w-full rounded-lg border border-line bg-paper p-2 text-ink focus:outline-none focus:ring-2 focus:ring-ledger/30"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-ink-soft">Telefone</label>
+                    <input
+                      name="clienteTelefone"
+                      type="tel"
+                      defaultValue={cliente?.telefone ?? ''}
+                      placeholder="Ex: (11) 99999-9999"
+                      className="w-full rounded-lg border border-line bg-paper p-2 text-ink focus:outline-none focus:ring-2 focus:ring-ledger/30"
+                    />
+                  </div>
+                </fieldset>
+              );
+            })()}
             <div>
               <label className="mb-1 block text-xs font-medium text-ink-soft">Descrição</label>
               <input
@@ -471,6 +578,9 @@ export default function Financas() {
                 name="valor"
                 type="text"
                 inputMode="decimal"
+                onInput={(e) => {
+                  e.currentTarget.value = sanitizeMoneyInput(e.currentTarget.value);
+                }}
                 required
                 defaultValue={contaEditando.valor.toString().replace('.', ',')}
                 className="w-full rounded-lg border border-line bg-paper p-2 text-ink focus:outline-none focus:ring-2 focus:ring-ledger/30"
@@ -512,6 +622,9 @@ export default function Financas() {
                 name="valor"
                 type="text"
                 inputMode="decimal"
+                onInput={(e) => {
+                  e.currentTarget.value = sanitizeMoneyInput(e.currentTarget.value);
+                }}
                 required
                 defaultValue={lancamentoEditando.valor.toString().replace('.', ',')}
                 className="w-full rounded-lg border border-line bg-paper p-2 text-ink focus:outline-none focus:ring-2 focus:ring-ledger/30"
@@ -531,6 +644,67 @@ export default function Financas() {
               Salvar Alterações
             </button>
           </form>
+        )}
+      </Modal>
+
+      <Modal
+        open={baixaPendente !== null}
+        onClose={() => setBaixaPendente(null)}
+        title={baixaPendente?.tipo === 'fiado' ? 'Confirmar baixa do fiado' : 'Confirmar pagamento da conta fixa'}
+      >
+        {baixaPendente && (
+          <div className="space-y-5">
+            <div className="rounded-xl border border-line bg-paper p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-ink-soft">
+                {baixaPendente.tipo === 'fiado' ? 'Cliente' : 'Conta fixa'}
+              </p>
+              <p className="mt-1 font-semibold text-ink">{baixaPendente.nome}</p>
+              <p className="mt-3 font-ledger text-2xl font-bold tabular-nums text-ledger-strong dark:text-ledger">
+                {formatCurrency(baixaPendente.valor)}
+              </p>
+            </div>
+
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-ink-soft">
+                {baixaPendente.tipo === 'fiado' ? 'Forma de recebimento' : 'Forma de pagamento'}
+              </span>
+              <select
+                value={formaBaixa}
+                onChange={(event) => setFormaBaixa(event.target.value as Exclude<FormaPagamento, 'fiado'>)}
+                className="w-full rounded-xl border border-line bg-paper px-3 py-2.5 text-sm text-ink"
+              >
+                <option value="dinheiro">Dinheiro</option>
+                <option value="pix">Pix</option>
+                <option value="cartao_credito">Cartão de crédito</option>
+                <option value="cartao_debito">Cartão de débito</option>
+              </select>
+            </label>
+
+            {baixaPendente.tipo === 'fixa' && formaBaixa !== 'dinheiro' && (
+              <p className="rounded-lg bg-ledger/10 px-3 py-2 text-xs text-ledger-strong dark:text-ledger">
+                O pagamento será registrado nos relatórios, mas não reduzirá o dinheiro físico esperado.
+              </p>
+            )}
+            {baixaErro && <p className="text-sm font-medium text-stamp">{baixaErro}</p>}
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setBaixaPendente(null)}
+                className="flex-1 rounded-lg border border-line bg-paper px-4 py-2.5 text-sm font-medium text-ink"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmarBaixa()}
+                disabled={baixando}
+                className="flex-1 rounded-lg bg-ledger px-4 py-2.5 text-sm font-bold text-paper disabled:opacity-60"
+              >
+                {baixando ? 'Salvando…' : 'Confirmar baixa'}
+              </button>
+            </div>
+          </div>
         )}
       </Modal>
 

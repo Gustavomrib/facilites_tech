@@ -1,15 +1,41 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type {
   AppData,
   Cliente,
+  CategoriaProduto,
   CompanyConfig,
   Conta,
   LancamentoManual,
   Produto,
   Venda,
   ViewPeriod,
+  FormaPagamento,
+  TipoEntrada,
+  TipoDespesa,
+  TipoMovimentoCaixa,
 } from '../types';
-import { loadData, saveData, uid, STORAGE_KEY } from '../lib/storage';
+import {
+  closeCashSessionRequest,
+  deleteFixedExpenseRequest,
+  openCashSessionRequest,
+  payCreditRequest,
+  payFixedExpenseRequest,
+  registerCustomerRequest,
+  registerFixedExpenseRequest,
+  registerSaleRequest,
+  registerTransactionRequest,
+  resolveTransactionIdentificationRequest,
+  type SaleItemInput,
+} from '../lib/business';
+import { decodeToken, getStoredToken, TOKEN_KEY } from '../lib/auth';
+import {
+  APP_DATA_CHANGED_EVENT,
+  emptyData,
+  loadData,
+  saveData,
+  storageKeyForUser,
+  uid,
+} from '../lib/storage';
 import { todayISO } from '../lib/format';
 
 interface ResumoPeriodo {
@@ -19,6 +45,7 @@ interface ResumoPeriodo {
 
 interface AppDataContextValue {
   data: AppData;
+  loadedUserId: string | null;
   setConfig: (config: CompanyConfig) => void;
   addVenda: (venda: Omit<Venda, 'id'>, opts?: { clienteId?: string }) => void;
   /**
@@ -38,6 +65,9 @@ interface AppDataContextValue {
   addProduto: (produto: Omit<Produto, 'id'>) => void;
   atualizarProduto: (id: string, patch: Partial<Omit<Produto, 'id'>>) => void;
   removerProduto: (id: string) => void;
+  addCategoria: (nome: string) => boolean;
+  editarCategoria: (id: string, nome: string) => boolean;
+  removerCategoria: (id: string) => void;
   addConta: (conta: Omit<Conta, 'id' | 'quitado'>) => void;
   editarConta: (id: string, patch: Partial<Omit<Conta, 'id'>>) => void;
   removerConta: (id: string) => void;
@@ -46,6 +76,29 @@ interface AppDataContextValue {
   editarLancamentoManual: (id: string, patch: Partial<Omit<LancamentoManual, 'id'>>) => void;
   removerLancamentoManual: (id: string) => void;
   addCliente: (cliente: Omit<Cliente, 'id'>) => Cliente;
+  editarCliente: (id: string, patch: Partial<Omit<Cliente, 'id'>>) => void;
+  registrarVendaNoBanco: (items: SaleItemInput[], forma: FormaPagamento, clienteId?: string) => Promise<void>;
+  registrarLancamentoNoBanco: (input: {
+    tipo: 'entrada' | 'saida';
+    descricao: string;
+    valor: number;
+    formaPagamento: Exclude<FormaPagamento, 'fiado'>;
+    tipoEntrada?: TipoEntrada;
+    tipoDespesa?: TipoDespesa;
+    movimentoCaixa?: TipoMovimentoCaixa;
+  }) => Promise<void>;
+  resolverPendenciaNoBanco: (id: string, classificacao: TipoEntrada | TipoDespesa) => Promise<void>;
+  cadastrarClienteNoBanco: (cliente: Omit<Cliente, 'id'>) => Promise<Cliente>;
+  baixarFiado: (id: string, forma: Exclude<FormaPagamento, 'fiado'>) => Promise<void>;
+  baixarDespesaFixa: (id: string, forma: Exclude<FormaPagamento, 'fiado'>) => Promise<void>;
+  cadastrarDespesaFixaNoBanco: (input: {
+    nome: string;
+    valor: number;
+    recorrencia: 'semanal' | 'mensal';
+  }) => Promise<void>;
+  removerDespesaFixaNoBanco: (id: string) => Promise<void>;
+  abrirCaixa: (valorInicial: number, responsavel?: string) => Promise<void>;
+  fecharCaixa: (dinheiroContado: number, permitirPendencias?: boolean) => Promise<void>;
   resetData: () => void;
   saldoCaixa: number;
   vendasHoje: number;
@@ -81,12 +134,61 @@ function diffDias(deIso: string, paraIso: string): number {
   return Math.round((para.getTime() - de.getTime()) / 86_400_000);
 }
 
+function dataLocalISO(instante?: string): string | undefined {
+  if (!instante) return undefined;
+  const data = new Date(instante);
+  const ano = data.getFullYear();
+  const mes = String(data.getMonth() + 1).padStart(2, '0');
+  const dia = String(data.getDate()).padStart(2, '0');
+  return `${ano}-${mes}-${dia}`;
+}
+
+function mesclarDadosDoBanco(prev: AppData, serverData: AppData): AppData {
+  const configLocal = prev.config;
+  const configServidor = serverData.config;
+  return {
+    ...emptyData,
+    ...serverData,
+    config: configLocal
+      ? {
+          ...configLocal,
+          despesasFixas: configServidor?.despesasFixas ?? configLocal.despesasFixas,
+          onboardingConcluido: configServidor?.onboardingConcluido ?? configLocal.onboardingConcluido,
+        }
+      : configServidor,
+  };
+}
+
 export function AppDataProvider({ children }: { children: ReactNode }) {
-  const [data, setData] = useState<AppData>(() => loadData());
+  const getAuthenticatedUserId = () => {
+    const token = getStoredToken();
+    return token ? decodeToken(token)?.sub ?? null : null;
+  };
+  const initialUserId = getAuthenticatedUserId();
+  const activeUserIdRef = useRef<string | null>(initialUserId);
+  const [data, setData] = useState<AppData>(() => loadData(initialUserId));
+  const [loadedUserId, setLoadedUserId] = useState<string | null>(initialUserId);
 
   useEffect(() => {
-    saveData(data);
+    saveData(data, activeUserIdRef.current);
   }, [data]);
+
+  useEffect(() => {
+    const reloadAuthenticatedData = (event: Event) => {
+      const userId = getAuthenticatedUserId();
+      activeUserIdRef.current = userId;
+      setLoadedUserId(userId);
+      const serverData = (event as CustomEvent<AppData | null>).detail;
+      setData((prev) => {
+        if (!serverData) return userId ? loadData(userId) : emptyData;
+        const configPersistida = userId ? loadData(userId).config : null;
+        return mesclarDadosDoBanco(configPersistida ? { ...prev, config: configPersistida } : prev, serverData);
+      });
+    };
+
+    window.addEventListener(APP_DATA_CHANGED_EVENT, reloadAuthenticatedData);
+    return () => window.removeEventListener(APP_DATA_CHANGED_EVENT, reloadAuthenticatedData);
+  }, []);
 
   useEffect(() => {
     // Sincroniza entre abas: se outra aba salvar (ou zerar) os dados, o
@@ -125,8 +227,15 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     // nesse instante específico.
     const handleStorageChange = (event: StorageEvent) => {
       if (event.storageArea !== localStorage) return;
-      if (event.key !== null && event.key !== STORAGE_KEY) return;
-      setData(loadData());
+      const userId = getAuthenticatedUserId();
+      if (event.key === TOKEN_KEY) {
+        activeUserIdRef.current = userId;
+        setLoadedUserId(userId);
+        setData(userId ? loadData(userId) : emptyData);
+        return;
+      }
+      if (event.key !== null && event.key !== storageKeyForUser(userId)) return;
+      setData(loadData(userId));
     };
 
     window.addEventListener('storage', handleStorageChange);
@@ -138,7 +247,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   };
 
   const addVenda = (venda: Omit<Venda, 'id'>, opts?: { clienteId?: string }) => {
-    const novaVenda: Venda = { ...venda, id: uid() };
+    const novaVenda: Venda = { ...venda, createdAt: venda.createdAt ?? new Date().toISOString(), id: uid() };
 
     setData((prev) => {
       let produtos = prev.produtos;
@@ -173,7 +282,14 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     const vendaAtual = data.vendas.find((v) => v.id === id);
     if (!vendaAtual) return false;
 
-    const vendaAtualizada: Venda = { ...vendaAtual, ...patch };
+    const vendaAtualizada: Venda = {
+      ...vendaAtual,
+      ...patch,
+      createdAt:
+        patch.data && patch.data !== vendaAtual.data
+          ? `${patch.data}T12:00:00.000Z`
+          : vendaAtual.createdAt,
+    };
     const saiuDoFiado = vendaAtual.formaPagamento === 'fiado' && vendaAtualizada.formaPagamento !== 'fiado';
     const contaVinculada = saiuDoFiado ? data.contas.find((c) => c.origemVendaId === id) : undefined;
 
@@ -273,6 +389,57 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     }));
   };
 
+  const addCategoria = (nome: string): boolean => {
+    const nomeNormalizado = nome.trim();
+    if (!nomeNormalizado) return false;
+    const categorias = data.categorias ?? [];
+    if (categorias.some((categoria) => categoria.nome.toLocaleLowerCase('pt-BR') === nomeNormalizado.toLocaleLowerCase('pt-BR'))) {
+      return false;
+    }
+    const novaCategoria: CategoriaProduto = { id: uid(), nome: nomeNormalizado };
+    setData((prev) => ({ ...prev, categorias: [...(prev.categorias ?? []), novaCategoria] }));
+    return true;
+  };
+
+  const editarCategoria = (id: string, nome: string): boolean => {
+    const nomeNormalizado = nome.trim();
+    const categorias = data.categorias ?? [];
+    const categoriaAtual = categorias.find((categoria) => categoria.id === id);
+    if (!categoriaAtual || !nomeNormalizado) return false;
+    if (
+      categorias.some(
+        (categoria) =>
+          categoria.id !== id &&
+          categoria.nome.toLocaleLowerCase('pt-BR') === nomeNormalizado.toLocaleLowerCase('pt-BR'),
+      )
+    ) {
+      return false;
+    }
+
+    setData((prev) => ({
+      ...prev,
+      categorias: (prev.categorias ?? []).map((categoria) =>
+        categoria.id === id ? { ...categoria, nome: nomeNormalizado } : categoria,
+      ),
+      produtos: prev.produtos.map((produto) =>
+        produto.categoria === categoriaAtual.nome ? { ...produto, categoria: nomeNormalizado } : produto,
+      ),
+    }));
+    return true;
+  };
+
+  const removerCategoria = (id: string) => {
+    const categoriaAtual = (data.categorias ?? []).find((categoria) => categoria.id === id);
+    if (!categoriaAtual) return;
+    setData((prev) => ({
+      ...prev,
+      categorias: (prev.categorias ?? []).filter((categoria) => categoria.id !== id),
+      produtos: prev.produtos.map((produto) =>
+        produto.categoria === categoriaAtual.nome ? { ...produto, categoria: undefined } : produto,
+      ),
+    }));
+  };
+
   const addConta = (conta: Omit<Conta, 'id' | 'quitado'>) => {
     setData((prev) => ({
       ...prev,
@@ -292,10 +459,12 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   };
 
   const marcarContaQuitada = (id: string, dataPagamento?: string) => {
+    const dataQuitacao = dataPagamento ?? todayISO();
+    const quitadoEm = dataQuitacao === todayISO() ? new Date().toISOString() : `${dataQuitacao}T12:00:00.000Z`;
     setData((prev) => ({
       ...prev,
       contas: prev.contas.map((c) =>
-        c.id === id ? { ...c, quitado: true, dataQuitacao: dataPagamento ?? todayISO() } : c,
+        c.id === id ? { ...c, quitado: true, dataQuitacao, quitadoEm } : c,
       ),
     }));
   };
@@ -303,14 +472,25 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const addLancamentoManual = (lancamento: Omit<LancamentoManual, 'id'>) => {
     setData((prev) => ({
       ...prev,
-      lancamentosManuais: [...prev.lancamentosManuais, { ...lancamento, id: uid() }],
+      lancamentosManuais: [
+        ...prev.lancamentosManuais,
+        { ...lancamento, createdAt: lancamento.createdAt ?? new Date().toISOString(), id: uid() },
+      ],
     }));
   };
 
   const editarLancamentoManual = (id: string, patch: Partial<Omit<LancamentoManual, 'id'>>) => {
     setData((prev) => ({
       ...prev,
-      lancamentosManuais: prev.lancamentosManuais.map((l) => (l.id === id ? { ...l, ...patch } : l)),
+      lancamentosManuais: prev.lancamentosManuais.map((l) =>
+        l.id === id
+          ? {
+              ...l,
+              ...patch,
+              createdAt: patch.data && patch.data !== l.data ? `${patch.data}T12:00:00.000Z` : l.createdAt,
+            }
+          : l,
+      ),
     }));
   };
 
@@ -327,19 +507,99 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     return novoCliente;
   };
 
+  const editarCliente = (id: string, patch: Partial<Omit<Cliente, 'id'>>) => {
+    setData((prev) => ({
+      ...prev,
+      clientes: prev.clientes.map((cliente) => (cliente.id === id ? { ...cliente, ...patch } : cliente)),
+    }));
+  };
+
+  const aplicarDadosDoBanco = (serverData: AppData) => {
+    setData((prev) => mesclarDadosDoBanco(prev, serverData));
+  };
+
+  const registrarVendaNoBanco = async (items: SaleItemInput[], forma: FormaPagamento, clienteId?: string) => {
+    const response = await registerSaleRequest(items, forma, clienteId);
+    aplicarDadosDoBanco(response.data);
+  };
+
+  const registrarLancamentoNoBanco: AppDataContextValue['registrarLancamentoNoBanco'] = async (input) => {
+    const response = await registerTransactionRequest({
+      type: input.tipo,
+      description: input.descricao,
+      amount: input.valor,
+      paymentMethod: input.formaPagamento,
+      entryKind: input.tipoEntrada,
+      expenseKind: input.tipoDespesa,
+      movementKind: input.movimentoCaixa,
+    });
+    aplicarDadosDoBanco(response.data);
+  };
+
+  const resolverPendenciaNoBanco: AppDataContextValue['resolverPendenciaNoBanco'] = async (id, classificacao) => {
+    const response = await resolveTransactionIdentificationRequest(id, classificacao);
+    aplicarDadosDoBanco(response.data);
+  };
+
+  const cadastrarClienteNoBanco = async (cliente: Omit<Cliente, 'id'>): Promise<Cliente> => {
+    const response = await registerCustomerRequest(cliente.nome, cliente.telefone);
+    aplicarDadosDoBanco(response.data);
+    return response.customer;
+  };
+
+  const baixarFiado = async (id: string, forma: Exclude<FormaPagamento, 'fiado'>) => {
+    const response = await payCreditRequest(id, forma);
+    aplicarDadosDoBanco(response.data);
+  };
+
+  const baixarDespesaFixa = async (id: string, forma: Exclude<FormaPagamento, 'fiado'>) => {
+    const response = await payFixedExpenseRequest(id, forma);
+    aplicarDadosDoBanco(response.data);
+  };
+
+  const cadastrarDespesaFixaNoBanco: AppDataContextValue['cadastrarDespesaFixaNoBanco'] = async (input) => {
+    const response = await registerFixedExpenseRequest(
+      input.nome,
+      input.valor,
+      input.recorrencia === 'semanal' ? 'weekly' : 'monthly',
+    );
+    aplicarDadosDoBanco(response.data);
+  };
+
+  const removerDespesaFixaNoBanco = async (id: string) => {
+    const response = await deleteFixedExpenseRequest(id);
+    aplicarDadosDoBanco(response.data);
+  };
+
+  const abrirCaixa = async (valorInicial: number, responsavel?: string) => {
+    const response = await openCashSessionRequest(valorInicial, responsavel);
+    aplicarDadosDoBanco(response.data);
+  };
+
+  const fecharCaixa = async (dinheiroContado: number, permitirPendencias = false) => {
+    if (!data.caixaAtual) throw new Error('Nenhum caixa aberto.');
+    const response = await closeCashSessionRequest(data.caixaAtual.id, dinheiroContado, permitirPendencias);
+    aplicarDadosDoBanco(response.data);
+  };
+
   const resetData = () => {
-    setData({ config: null, vendas: [], produtos: [], contas: [], lancamentosManuais: [], clientes: [] });
+    setData({ ...emptyData });
   };
 
   const hoje = todayISO();
   const viewPeriod: ViewPeriod = data.config?.viewPeriod ?? 'day';
 
   const vendasHoje = useMemo(
-    () =>
-      data.vendas
-        .filter((v) => v.data === hoje)
-        .reduce((sum, v) => sum + v.quantidade * v.valorUnitario, 0),
-    [data.vendas, hoje],
+    () => {
+      const vendasRecebidas = data.vendas
+        .filter((v) => v.data === hoje && v.formaPagamento !== 'fiado')
+        .reduce((sum, v) => sum + v.quantidade * v.valorUnitario, 0);
+      const fiadosRecebidos = data.contas
+        .filter((c) => c.tipo === 'receber' && c.quitado && c.dataQuitacao === hoje)
+        .reduce((sum, c) => sum + c.valor, 0);
+      return vendasRecebidas + fiadosRecebidos;
+    },
+    [data.vendas, data.contas, hoje],
   );
 
   const contasQuitadasHoje = useMemo(
@@ -354,26 +614,42 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     const lancamentosSaida = data.lancamentosManuais
       .filter((l) => l.tipo === 'saida' && l.data === hoje)
       .reduce((sum, l) => sum + l.valor, 0);
-    return contasPagas + lancamentosSaida;
-  }, [contasQuitadasHoje, data.lancamentosManuais, hoje]);
+    const despesasFixasPagas = (data.config?.despesasFixas ?? [])
+      .filter((despesa) => despesa.quitado && dataLocalISO(despesa.pagoEm) === hoje)
+      .reduce((sum, despesa) => sum + despesa.valor, 0);
+    return contasPagas + lancamentosSaida + despesasFixasPagas;
+  }, [contasQuitadasHoje, data.config?.despesasFixas, data.lancamentosManuais, hoje]);
 
   const lucroEstimadoHoje = useMemo(() => {
+    const vendasFiadoRecebidasHoje = new Set(
+      data.contas
+        .filter((c) => c.tipo === 'receber' && c.quitado && c.dataQuitacao === hoje && c.origemVendaId)
+        .map((c) => c.origemVendaId),
+    );
     return data.vendas
-      .filter((v) => v.data === hoje && v.produtoId)
+      .filter(
+        (v) =>
+          v.produtoId &&
+          ((v.data === hoje && v.formaPagamento !== 'fiado') || vendasFiadoRecebidasHoje.has(v.id)),
+      )
       .reduce((sum, v) => {
         const produto = data.produtos.find((p) => p.id === v.produtoId);
         if (!produto || produto.custo === undefined) return sum;
         return sum + (v.valorUnitario - produto.custo) * v.quantidade;
       }, 0);
-  }, [data.vendas, data.produtos, hoje]);
+  }, [data.vendas, data.produtos, data.contas, hoje]);
 
   const resumoPeriodo = useMemo<ResumoPeriodo>(() => {
     const dias = viewPeriod === 'day' ? [hoje] : ultimosNDias(hoje, 7);
     const diasSet = new Set(dias);
 
     const vendas = data.vendas
-      .filter((v) => diasSet.has(v.data))
+      .filter((v) => v.formaPagamento !== 'fiado' && diasSet.has(v.data))
       .reduce((sum, v) => sum + v.quantidade * v.valorUnitario, 0);
+
+    const recebimentos = data.contas
+      .filter((c) => c.tipo === 'receber' && c.quitado && c.dataQuitacao && diasSet.has(c.dataQuitacao))
+      .reduce((sum, c) => sum + c.valor, 0);
 
     const contasPagas = data.contas
       .filter((c) => c.tipo === 'pagar' && c.quitado && c.dataQuitacao && diasSet.has(c.dataQuitacao))
@@ -381,19 +657,28 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     const lancamentosSaida = data.lancamentosManuais
       .filter((l) => l.tipo === 'saida' && diasSet.has(l.data))
       .reduce((sum, l) => sum + l.valor, 0);
+    const despesasFixasPagas = (data.config?.despesasFixas ?? [])
+      .filter((despesa) => {
+        const diaPagamento = dataLocalISO(despesa.pagoEm);
+        return despesa.quitado && diaPagamento !== undefined && diasSet.has(diaPagamento);
+      })
+      .reduce((sum, despesa) => sum + despesa.valor, 0);
 
-    return { vendas, despesas: contasPagas + lancamentosSaida };
-  }, [data.vendas, data.contas, data.lancamentosManuais, viewPeriod, hoje]);
+    return { vendas: vendas + recebimentos, despesas: contasPagas + lancamentosSaida + despesasFixasPagas };
+  }, [data.vendas, data.contas, data.config?.despesasFixas, data.lancamentosManuais, viewPeriod, hoje]);
 
   const vendasUltimos7Dias = useMemo(() => {
     const dias = ultimosNDias(hoje, 7);
     return dias.map((data_) => ({
       data: data_,
       total: data.vendas
-        .filter((v) => v.data === data_)
-        .reduce((sum, v) => sum + v.quantidade * v.valorUnitario, 0),
+        .filter((v) => v.data === data_ && v.formaPagamento !== 'fiado')
+        .reduce((sum, v) => sum + v.quantidade * v.valorUnitario, 0) +
+        data.contas
+          .filter((c) => c.tipo === 'receber' && c.quitado && c.dataQuitacao === data_)
+          .reduce((sum, c) => sum + c.valor, 0),
     }));
-  }, [data.vendas, hoje]);
+  }, [data.vendas, data.contas, hoje]);
 
   const saldoCaixa = useMemo(() => {
     const entradasVendas = data.vendas
@@ -411,15 +696,19 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     const saidasManuais = data.lancamentosManuais
       .filter((l) => l.tipo === 'saida')
       .reduce((sum, l) => sum + l.valor, 0);
+    const saidasFixas = (data.config?.despesasFixas ?? [])
+      .filter((despesa) => despesa.quitado)
+      .reduce((sum, despesa) => sum + despesa.valor, 0);
 
     return (
       entradasVendas +
       entradasContasRecebidas +
       entradasManuais -
       saidasContasPagas -
-      saidasManuais
+      saidasManuais -
+      saidasFixas
     );
-  }, [data.vendas, data.contas, data.lancamentosManuais]);
+  }, [data.vendas, data.contas, data.config?.despesasFixas, data.lancamentosManuais]);
 
   const contasAPagarHoje = useMemo(
     () => data.contas.filter((c) => c.tipo === 'pagar' && !c.quitado && c.vencimento === hoje),
@@ -461,6 +750,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
 
   const value: AppDataContextValue = {
     data,
+    loadedUserId,
     setConfig,
     addVenda,
     editarVenda,
@@ -468,6 +758,9 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     addProduto,
     atualizarProduto,
     removerProduto,
+    addCategoria,
+    editarCategoria,
+    removerCategoria,
     addConta,
     editarConta,
     removerConta,
@@ -476,6 +769,17 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     editarLancamentoManual,
     removerLancamentoManual,
     addCliente,
+    editarCliente,
+    registrarVendaNoBanco,
+    registrarLancamentoNoBanco,
+    resolverPendenciaNoBanco,
+    cadastrarClienteNoBanco,
+    baixarFiado,
+    baixarDespesaFixa,
+    cadastrarDespesaFixaNoBanco,
+    removerDespesaFixaNoBanco,
+    abrirCaixa,
+    fecharCaixa,
     resetData,
     saldoCaixa,
     vendasHoje,

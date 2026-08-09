@@ -1,10 +1,10 @@
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700;9..144,800&family=Karla:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600;700&display=swap');
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-  --font-display: 'Fraunces', ui-serif, serif;
-  --font-body: 'Karla', ui-sans-serif, sans-serif;
+  --font-display: 'Anthropic Sans', 'Inter', ui-sans-serif, sans-serif;
+  --font-body: 'Anthropic Sans', 'Inter', ui-sans-serif, sans-serif;
   --font-ledger: 'IBM Plex Mono', ui-monospace, monospace;
 
   --color-paper: #f7f1e4;
@@ -20,6 +20,8 @@
 
 :root {
   color-scheme: light;
+  --color-scrollbar: #e9dfce;
+  --color-scrollbar-hover: #ddd0bb;
 }
 
 .dark {
@@ -33,6 +35,8 @@
   --color-ledger-strong: #2c7e5c;
   --color-stamp: #e2665a;
   --color-brass: #d9a94f;
+  --color-scrollbar: #2a241c;
+  --color-scrollbar-hover: #393126;
 }
 
 body {
@@ -40,6 +44,37 @@ body {
   background-color: var(--color-paper);
   color: var(--color-ink);
   -webkit-tap-highlight-color: transparent;
+}
+
+/* Rolagem discreta e coerente com os fundos claro e escuro. */
+* {
+  scrollbar-color: var(--color-scrollbar) transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  min-height: 32px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  background-color: var(--color-scrollbar);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-scrollbar-hover);
+}
+
+*::-webkit-scrollbar-button {
+  display: none;
 }
 
 .scrollbar-hide::-webkit-scrollbar {
@@ -65,8 +100,8 @@ body {
   animation: fadeIn 0.3s ease-in-out;
 }
 
-/* Carimbo — rotated stamp badge used for every status label in the app
-   (Pago, Atrasado, Vence hoje, Estoque baixo, Fiado...) instead of a flat pill. */
+/* Etiqueta de status fixa e alinhada, compartilhada por Pago, Atrasado,
+   Vence hoje, Estoque baixo, Fiado e demais estados. */
 .stamp {
   display: inline-flex;
   align-items: center;
@@ -80,12 +115,8 @@ body {
   border-radius: 0.4rem;
   border: 1.5px solid currentColor;
   box-shadow: 0 0 0 1px currentColor inset;
-  transform: rotate(-1.5deg);
+  transform: none;
   white-space: nowrap;
-}
-
-.stamp-tilt-right {
-  transform: rotate(1.5deg);
 }
 
 /* Recibo — perforated/torn paper edge for the one hero card per screen. */
@@ -103,6 +134,27 @@ body {
   background-image: radial-gradient(circle at 8px 0, transparent 7px, var(--color-paper) 7.5px);
   background-size: 16px 16px;
   background-position: -4px 0;
+}
+
+/* Chama atenção discretamente para o controle de privacidade da demonstração. */
+@keyframes privacy-nudge {
+  0%, 6%, 12%, 18%, 100% {
+    transform: translateY(0);
+  }
+  3%, 9%, 15% {
+    transform: translateY(-5px);
+  }
+}
+
+.privacy-nudge {
+  animation: privacy-nudge 15s ease-in-out infinite;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .privacy-nudge {
+    animation: none;
+  }
 }
 
 .modal-overlay {
@@ -164,34 +216,54 @@ body {
   transform: scale(1);
 }
 
-.radio-card {
-  border: 1px solid var(--color-line);
-  border-radius: 1rem;
-  padding: 0.85rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  cursor: pointer;
-  background: var(--color-paper);
-  color: var(--color-ink);
-  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
-}
+@media print {
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
 
-.radio-card div {
-  width: 100%;
-}
+  body:has(.print-report) {
+    background: white;
+  }
 
-.radio-card input:checked + div {
-  border: 1px solid transparent;
-  background-color: color-mix(in srgb, var(--color-ledger) 16%, transparent);
-  color: var(--color-ledger-strong);
-}
+  .print-report {
+    color-scheme: light;
+    --color-paper: #f7f1e4;
+    --color-paper-raised: #fffcf5;
+    --color-ink: #241a12;
+    --color-ink-soft: #6b5d4c;
+    --color-line: #e4d8c3;
+    --color-ledger: #1f6f4a;
+    --color-ledger-strong: #145033;
+    --color-stamp: #b23a2e;
+    --color-brass: #9c6b22;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
 
-.dark .radio-card input:checked + div {
-  color: var(--color-ledger);
-}
+  body:has(.print-report) nav,
+  body:has(.print-report) aside,
+  body:has(.print-report) header.sticky,
+  body:has(.print-report) button.fixed,
+  .print-report .no-print {
+    display: none !important;
+  }
 
-.radio-card:hover {
-  border-color: var(--color-ink-soft);
+  body:has(.print-report) main {
+    max-width: none;
+    padding: 0;
+  }
+
+  .print-report .report-sheet {
+    border: 0;
+    border-radius: 0;
+    background: white;
+    box-shadow: none;
+    color: #241a12;
+    padding: 0;
+  }
+
+  .print-report .break-inside-avoid {
+    break-inside: avoid;
+  }
 }

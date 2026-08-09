@@ -1,10 +1,12 @@
 {
-  "name": "meu-negocio-no-bolso",
+  "name": "caixafacil",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/dev.js",
+    "dev:web": "vite",
+    "dev:api": "npm --prefix server run dev",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",

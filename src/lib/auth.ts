@@ -1,3 +1,5 @@
+import type { AppData } from '../types';
+
 export const TOKEN_KEY = 'mnb-auth-token';
 
 export type TokenPayload = {
@@ -35,9 +37,35 @@ export function clearStoredToken() {
   localStorage.removeItem(TOKEN_KEY);
 }
 
+let refreshInFlight: Promise<AuthResponse> | null = null;
+
+export async function ensureStoredAccessToken(forceRefresh = false): Promise<string> {
+  const currentToken = getStoredToken();
+  if (!forceRefresh && isTokenValid(currentToken)) return currentToken;
+
+  if (!refreshInFlight) {
+    refreshInFlight = refreshSessionRequest().finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  try {
+    const session = await refreshInFlight;
+    setStoredToken(session.token);
+    return session.token;
+  } catch (error) {
+    clearStoredToken();
+    throw error;
+  }
+}
+
 const API_URL = import.meta.env.VITE_API_URL ?? '/api';
 
-export type AuthResponse = { token: string; user: { id: string; email: string } };
+export type AuthResponse = {
+  token: string;
+  user: { id: string; email: string };
+  data?: AppData | null;
+};
+export type SessionResponse = Omit<AuthResponse, 'token'>;
 
 async function parseJsonOrThrow(res: Response) {
   const body = await res.json().catch(() => null);
@@ -54,6 +82,7 @@ export async function registerRequest(
 ): Promise<AuthResponse> {
   const res = await fetch(`${API_URL}/auth/register`, {
     method: 'POST',
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password, confirmPassword }),
   });
@@ -63,8 +92,85 @@ export async function registerRequest(
 export async function loginRequest(email: string, password: string): Promise<AuthResponse> {
   const res = await fetch(`${API_URL}/auth/login`, {
     method: 'POST',
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
+  });
+  return parseJsonOrThrow(res);
+}
+
+export async function forgotPasswordRequest(email: string): Promise<{ message: string; resetToken?: string }> {
+  const res = await fetch(`${API_URL}/auth/forgot-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+  return parseJsonOrThrow(res);
+}
+
+export async function resetPasswordRequest(
+  token: string,
+  password: string,
+  confirmPassword: string,
+): Promise<{ message: string }> {
+  const res = await fetch(`${API_URL}/auth/reset-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, password, confirmPassword }),
+  });
+  return parseJsonOrThrow(res);
+}
+
+export async function sessionRequest(token: string): Promise<SessionResponse> {
+  const res = await fetch(`${API_URL}/auth/me`, {
+    credentials: 'include',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return parseJsonOrThrow(res);
+}
+
+export async function refreshSessionRequest(): Promise<AuthResponse> {
+  const res = await fetch(`${API_URL}/auth/refresh`, {
+    method: 'POST',
+    credentials: 'include',
+  });
+  return parseJsonOrThrow(res);
+}
+
+export async function logoutRequest(): Promise<void> {
+  const res = await fetch(`${API_URL}/auth/logout`, {
+    method: 'POST',
+    credentials: 'include',
+  });
+  if (!res.ok && res.status !== 401) {
+    throw new Error('Não foi possível encerrar a sessão no servidor.');
+  }
+}
+
+export async function resetAccountDataRequest(token: string): Promise<void> {
+  const res = await fetch(`${API_URL}/account/data`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error ?? 'Não foi possível zerar os dados da conta.');
+  }
+}
+
+export async function changePasswordRequest(
+  token: string,
+  currentPassword: string,
+  newPassword: string,
+  confirmPassword: string,
+): Promise<{ message: string }> {
+  const res = await fetch(`${API_URL}/account/password`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ currentPassword, newPassword, confirmPassword }),
   });
   return parseJsonOrThrow(res);
 }
