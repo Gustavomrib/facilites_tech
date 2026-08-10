@@ -34,6 +34,7 @@ export default tseslint.config([
   {
     files: ['e2e/**/*.ts'],
     rules: {
+      'no-empty-pattern': 'off',
       'react-hooks/rules-of-hooks': 'off',
     },
   },

@@ -40,7 +40,7 @@ type WorkerFixtures = {
 };
 
 export const test = base.extend<Fixtures, WorkerFixtures>({
-  newUser: async (_fixtures, use) => {
+  newUser: async ({}, use) => {
     await use(createTestUser());
   },
 

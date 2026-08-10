@@ -68,7 +68,7 @@ test('finds a product in Caixa by typing its SKU, not just its name', async ({ p
 
   await page.getByRole('link', { name: 'Caixa' }).click();
   // Typing the SKU (not the name) must still surface this product in the search results.
-  await page.getByPlaceholder('Buscar produto cadastrado...').fill(sku);
+  await page.getByPlaceholder(/Buscar produto/).fill(sku);
   await expect(page.getByRole('button', { name: new RegExp(productName) })).toBeVisible();
 });
 
@@ -76,7 +76,7 @@ test('registers a cash sale for a manually entered amount in Caixa', async ({ pa
   void sharedOnboardedPage;
 
   await page.getByRole('link', { name: 'Caixa' }).click();
-  await page.getByPlaceholder('Ou digite um valor avulso (ex: 12,50)').fill('25,00');
+  await page.getByPlaceholder(/valor avulso/).fill('25,00');
   await page.getByRole('button', { name: 'Adicionar' }).click();
   await expect(page.getByText('Diversos')).toBeVisible();
 
@@ -102,7 +102,7 @@ test('registers a fiado (store-credit) sale tied to a new customer', async ({ pa
   const clienteNome = `Cliente E2E ${Date.now()}`;
 
   await page.getByRole('link', { name: 'Caixa' }).click();
-  await page.getByPlaceholder('Ou digite um valor avulso (ex: 12,50)').fill('30,00');
+  await page.getByPlaceholder(/valor avulso/).fill('30,00');
   await page.getByRole('button', { name: 'Adicionar' }).click();
 
   await page.getByRole('button', { name: 'Fiado', exact: true }).click();
@@ -143,7 +143,7 @@ test('registers a multi-quantity cash sale and decrements stock by the full amou
   await expect(page.getByRole('heading', { name: productName, exact: true })).toBeVisible();
 
   await page.getByRole('link', { name: 'Caixa' }).click();
-  await page.getByPlaceholder('Buscar produto cadastrado...').fill(productName);
+  await page.getByPlaceholder(/Buscar produto/).fill(productName);
   await page.getByRole('button', { name: new RegExp(productName) }).click();
 
   // Bump the single unit added above to 3 via the quantity stepper (Task 2) —
@@ -190,7 +190,7 @@ test('registers a multi-quantity fiado sale with the correct receivable total', 
   await expect(page.getByRole('heading', { name: productName, exact: true })).toBeVisible();
 
   await page.getByRole('link', { name: 'Caixa' }).click();
-  await page.getByPlaceholder('Buscar produto cadastrado...').fill(productName);
+  await page.getByPlaceholder(/Buscar produto/).fill(productName);
   await page.getByRole('button', { name: new RegExp(productName) }).click();
   await page.getByRole('button', { name: `Aumentar quantidade de ${productName}` }).click();
   // quantity is now 2 x R$15,00 = R$30,00
