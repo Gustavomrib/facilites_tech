@@ -3,12 +3,8 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { AccountType, Recurrence } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { addUTCMonthsClamped, addUTCDays, startOfUTCDay } from '../common/date.util';
 import { CreateFixedExpenseDto } from './dto/create-fixed-expense.dto';
-
-const INTERVAL_DAYS: Record<Recurrence, number> = {
-  [Recurrence.WEEKLY]: 7,
-  [Recurrence.MONTHLY]: 30,
-};
 
 @Injectable()
 export class FixedExpensesService {
@@ -21,7 +17,14 @@ export class FixedExpensesService {
 
   async create(companyId: string, userId: string, dto: CreateFixedExpenseDto) {
     const fixedExpense = await this.prisma.fixedExpense.create({
-      data: { companyId, name: dto.name, amount: dto.amount, recurrence: dto.recurrence },
+      data: {
+        companyId,
+        name: dto.name,
+        amount: dto.amount,
+        recurrence: dto.recurrence,
+        dayOfMonth:
+          dto.recurrence === Recurrence.MONTHLY ? startOfToday().getUTCDate() : undefined,
+      },
     });
 
     await this.auditLogsService.record({
@@ -79,9 +82,8 @@ export class FixedExpensesService {
     });
     if (hasOpenAccount) return;
 
-    const intervalDays = INTERVAL_DAYS[expense.recurrence];
     const base = expense.lastGeneratedDueDate ?? startOfToday();
-    const nextDueDate = addDays(base, intervalDays);
+    const nextDueDate = nextDueDateFor(expense.recurrence, base, expense.dayOfMonth);
 
     await this.prisma.$transaction([
       this.prisma.account.create({
@@ -96,7 +98,13 @@ export class FixedExpensesService {
       }),
       this.prisma.fixedExpense.update({
         where: { id: expense.id },
-        data: { lastGeneratedDueDate: nextDueDate },
+        data: {
+          lastGeneratedDueDate: nextDueDate,
+          dayOfMonth:
+            expense.recurrence === Recurrence.MONTHLY && !expense.dayOfMonth
+              ? base.getUTCDate()
+              : undefined,
+        },
       }),
     ]);
   }
@@ -115,12 +123,13 @@ export class FixedExpensesService {
 }
 
 function startOfToday(): Date {
-  const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  return startOfUTCDay();
 }
 
-function addDays(date: Date, days: number): Date {
-  const result = new Date(date);
-  result.setUTCDate(result.getUTCDate() + days);
-  return result;
+function nextDueDateFor(recurrence: Recurrence, base: Date, dayOfMonth: number | null): Date {
+  if (recurrence === Recurrence.WEEKLY) {
+    return addUTCDays(base, 7);
+  }
+
+  return addUTCMonthsClamped(base, 1, dayOfMonth ?? base.getUTCDate());
 }

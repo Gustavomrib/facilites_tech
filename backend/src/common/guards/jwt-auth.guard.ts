@@ -4,6 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Reflector } from '@nestjs/core';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { AuthenticatedRequest, JwtPayload } from '../types/auth-request';
+import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -11,9 +12,10 @@ export class JwtAuthGuard implements CanActivate {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly reflector: Reflector,
+    private readonly prisma: PrismaService,
   ) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
       context.getHandler(),
       context.getClass(),
@@ -26,15 +28,25 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('Missing access token');
     }
 
+    let payload: JwtPayload;
     try {
-      const payload = this.jwtService.verify<JwtPayload>(token, {
+      payload = this.jwtService.verify<JwtPayload>(token, {
         secret: this.configService.get<string>('jwt.accessSecret'),
       });
-      request.user = payload;
-      return true;
     } catch {
       throw new UnauthorizedException('Invalid or expired access token');
     }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+      select: { isActive: true },
+    });
+    if (!user?.isActive) {
+      throw new UnauthorizedException('User is inactive');
+    }
+
+    request.user = payload;
+    return true;
   }
 
   private extractToken(request: AuthenticatedRequest): string | undefined {

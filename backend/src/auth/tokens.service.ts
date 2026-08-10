@@ -1,11 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { Prisma } from '@prisma/client';
 import { randomBytes, createHash, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtPayload } from '../common/types/auth-request';
 
 const REFRESH_TOKEN_BYTES = 64;
+type RefreshTokenClient = PrismaService | Prisma.TransactionClient;
 
 @Injectable()
 export class TokensService {
@@ -28,34 +30,42 @@ export class TokensService {
   }
 
   /**
-   * Rotates a refresh token: validates it, revokes it, and issues a new one in the same
-   * family. If the presented token was already revoked, that's evidence of token reuse
-   * (theft/replay) — the entire family is revoked so both the attacker's and the
-   * legitimate user's sessions are killed, forcing a fresh login.
+   * Rotates a refresh token atomically: the presented token is conditionally
+   * revoked first, and the next token is only created if that update wins.
    */
   async rotateRefreshToken(rawToken: string, ip?: string) {
     const tokenHash = this.hashToken(rawToken);
-    const existing = await this.prisma.refreshToken.findUnique({ where: { tokenHash } });
+    const now = new Date();
 
-    if (!existing) {
-      return { status: 'invalid' as const };
-    }
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.refreshToken.findUnique({ where: { tokenHash } });
 
-    if (existing.revokedAt || existing.expiresAt < new Date()) {
-      await this.prisma.refreshToken.updateMany({
-        where: { familyId: existing.familyId, revokedAt: null },
-        data: { revokedAt: new Date() },
+      if (!existing) {
+        return { status: 'invalid' as const };
+      }
+
+      const revoked = await tx.refreshToken.updateMany({
+        where: {
+          id: existing.id,
+          tokenHash,
+          revokedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: { revokedAt: now },
       });
-      return { status: 'reused' as const, userId: existing.userId };
-    }
 
-    const next = await this.createRefreshToken(existing.userId, existing.familyId, ip);
-    await this.prisma.refreshToken.update({
-      where: { id: existing.id },
-      data: { revokedAt: new Date(), replacedById: next.record.id },
+      if (revoked.count !== 1) {
+        return { status: 'invalid' as const, userId: existing.userId };
+      }
+
+      const next = await this.createRefreshToken(existing.userId, existing.familyId, ip, tx);
+      await tx.refreshToken.update({
+        where: { id: existing.id },
+        data: { replacedById: next.record.id },
+      });
+
+      return { status: 'rotated' as const, userId: existing.userId, ...next };
     });
-
-    return { status: 'rotated' as const, userId: existing.userId, ...next };
   }
 
   async revokeRefreshToken(
@@ -76,12 +86,24 @@ export class TokensService {
     return { userId: existing.userId, companyId: existing.user.companyId };
   }
 
-  private async createRefreshToken(userId: string, familyId: string, ip?: string) {
+  async revokeAllByUserId(userId: string): Promise<void> {
+    await this.prisma.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  }
+
+  private async createRefreshToken(
+    userId: string,
+    familyId: string,
+    ip?: string,
+    client: RefreshTokenClient = this.prisma,
+  ) {
     const rawToken = randomBytes(REFRESH_TOKEN_BYTES).toString('hex');
     const tokenHash = this.hashToken(rawToken);
     const expiresAt = this.computeExpiry();
 
-    const record = await this.prisma.refreshToken.create({
+    const record = await client.refreshToken.create({
       data: { userId, familyId, tokenHash, expiresAt, createdByIp: ip },
     });
 

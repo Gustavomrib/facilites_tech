@@ -199,7 +199,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (status === 'authenticated') {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- marks a new authenticated load before async hydration.
       setReady(false);
       reloadAll().catch(() => {
         setReady(true);
@@ -505,7 +504,6 @@ function useLowStock(status: string, produtos: Produto[], ready: boolean): Produ
 
   useEffect(() => {
     if (status !== 'authenticated' || !ready) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- clears stale server-derived low-stock state on auth changes.
       setLowStock([]);
       return;
     }
@@ -521,7 +519,6 @@ function useLowStock(status: string, produtos: Produto[], ready: boolean): Produ
   return lowStock;
 }
 
-// eslint-disable-next-line react-refresh/only-export-components -- Context hooks live with their provider.
 export function useAppData() {
   const ctx = useContext(AppDataContext);
   if (!ctx) throw new Error('useAppData deve ser usado dentro de AppDataProvider');

@@ -3,6 +3,7 @@ import { AccountType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { FixedExpensesService } from '../fixed-expenses/fixed-expenses.service';
+import { addUTCDays, startOfUTCDay } from '../common/date.util';
 import { CreatePayableDto } from './dto/create-payable.dto';
 
 @Injectable()
@@ -52,8 +53,7 @@ export class AccountsService {
 
   findDueSoon(companyId: string, type: AccountType, days = 3) {
     const today = startOfToday();
-    const limit = new Date(today);
-    limit.setDate(limit.getDate() + days);
+    const limit = addUTCDays(today, days);
     return this.prisma.account.findMany({
       where: { companyId, type, paid: false, dueDate: { gt: today, lte: limit } },
       orderBy: { dueDate: 'asc' },
@@ -87,6 +87,5 @@ export class AccountsService {
 }
 
 function startOfToday(): Date {
-  const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  return startOfUTCDay();
 }

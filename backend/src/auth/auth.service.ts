@@ -80,11 +80,13 @@ export class AuthService {
     if (result.status === 'invalid') {
       throw new UnauthorizedException('Invalid refresh token');
     }
-    if (result.status === 'reused') {
-      throw new UnauthorizedException('Refresh token reuse detected, session revoked');
-    }
 
     const user = await this.prisma.user.findUniqueOrThrow({ where: { id: result.userId } });
+    if (!user.isActive) {
+      await this.tokensService.revokeAllByUserId(user.id);
+      throw new UnauthorizedException('User is inactive. Please contact an administrator.');
+    }
+
     const payload: JwtPayload = {
       sub: user.id,
       companyId: user.companyId,

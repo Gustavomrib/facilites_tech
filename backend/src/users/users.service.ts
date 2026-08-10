@@ -8,6 +8,7 @@ import { Role } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { TokensService } from '../auth/tokens.service';
 import { CreateUserDto } from './dto/create-user.dto';
 
 const BCRYPT_ROUNDS = 12;
@@ -17,6 +18,7 @@ export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLogsService: AuditLogsService,
+    private readonly tokensService: TokensService,
   ) {}
 
   async create(companyId: string, actingUserId: string, actingRole: Role, dto: CreateUserDto) {
@@ -73,6 +75,10 @@ export class UsersService {
       data: { isActive },
       select: { id: true, name: true, email: true, role: true, isActive: true },
     });
+
+    if (!isActive) {
+      await this.tokensService.revokeAllByUserId(targetId);
+    }
 
     await this.auditLogsService.record({
       companyId,

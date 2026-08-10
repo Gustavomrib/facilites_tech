@@ -4,7 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { FixedExpensesService } from './fixed-expenses.service';
 
-describe('FixedExpensesService — recurrence correctness', () => {
+describe('FixedExpensesService - recurrence correctness', () => {
   let service: FixedExpensesService;
   let prisma: {
     fixedExpense: { findUnique: jest.Mock; update: jest.Mock; findMany: jest.Mock };
@@ -30,10 +30,7 @@ describe('FixedExpensesService — recurrence correctness', () => {
     service = moduleRef.get(FixedExpensesService);
   });
 
-  it('anchors the next due date on the previous SCHEDULED due date, not on today', async () => {
-    // Rent due on the 5th (represented here as day 5 of a fixed epoch), monthly.
-    const previousDueDate = new Date('2026-07-05T00:00:00.000Z');
-
+  it('advances monthly expenses by calendar month while preserving the preferred day', async () => {
     prisma.fixedExpense.findUnique.mockResolvedValue({
       id: 'fe-1',
       companyId: 'company-1',
@@ -41,20 +38,57 @@ describe('FixedExpensesService — recurrence correctness', () => {
       amount: 900,
       recurrence: Recurrence.MONTHLY,
       active: true,
-      lastGeneratedDueDate: previousDueDate,
+      dayOfMonth: 5,
+      lastGeneratedDueDate: new Date('2026-07-05T00:00:00.000Z'),
     });
-    prisma.account.findFirst.mockResolvedValue(null); // no open bill pending
+    prisma.account.findFirst.mockResolvedValue(null);
 
     await service.generateNextIfNeeded('fe-1');
 
     const createCall = prisma.account.create.mock.calls[0][0];
-    expect(createCall.data.dueDate.toISOString().slice(0, 10)).toBe('2026-08-04');
-    // 30 days after 2026-07-05, NOT 30 days after "today" — a late payment must never
-    // push this date forward.
+    expect(createCall.data.dueDate.toISOString().slice(0, 10)).toBe('2026-08-05');
     expect(createCall.data.type).toBe(AccountType.PAYABLE);
 
     const updateCall = prisma.fixedExpense.update.mock.calls[0][0];
-    expect(updateCall.data.lastGeneratedDueDate.toISOString().slice(0, 10)).toBe('2026-08-04');
+    expect(updateCall.data.lastGeneratedDueDate.toISOString().slice(0, 10)).toBe('2026-08-05');
+  });
+
+  it('uses the last day of the month when the preferred day does not exist', async () => {
+    prisma.fixedExpense.findUnique.mockResolvedValue({
+      id: 'fe-1',
+      companyId: 'company-1',
+      name: 'Aluguel',
+      amount: 900,
+      recurrence: Recurrence.MONTHLY,
+      active: true,
+      dayOfMonth: 31,
+      lastGeneratedDueDate: new Date('2025-01-31T00:00:00.000Z'),
+    });
+    prisma.account.findFirst.mockResolvedValue(null);
+
+    await service.generateNextIfNeeded('fe-1');
+
+    const createCall = prisma.account.create.mock.calls[0][0];
+    expect(createCall.data.dueDate.toISOString().slice(0, 10)).toBe('2025-02-28');
+  });
+
+  it('keeps the original preferred day after a short-month clamp', async () => {
+    prisma.fixedExpense.findUnique.mockResolvedValue({
+      id: 'fe-1',
+      companyId: 'company-1',
+      name: 'Aluguel',
+      amount: 900,
+      recurrence: Recurrence.MONTHLY,
+      active: true,
+      dayOfMonth: 31,
+      lastGeneratedDueDate: new Date('2025-02-28T00:00:00.000Z'),
+    });
+    prisma.account.findFirst.mockResolvedValue(null);
+
+    await service.generateNextIfNeeded('fe-1');
+
+    const createCall = prisma.account.create.mock.calls[0][0];
+    expect(createCall.data.dueDate.toISOString().slice(0, 10)).toBe('2025-03-31');
   });
 
   it('does not create a duplicate occurrence while one is still open (unpaid)', async () => {
@@ -65,6 +99,7 @@ describe('FixedExpensesService — recurrence correctness', () => {
       amount: 900,
       recurrence: Recurrence.MONTHLY,
       active: true,
+      dayOfMonth: 5,
       lastGeneratedDueDate: new Date('2026-07-05T00:00:00.000Z'),
     });
     prisma.account.findFirst.mockResolvedValue({ id: 'existing-open-account' });
