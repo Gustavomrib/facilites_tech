@@ -31,17 +31,17 @@ export interface DespesaFixa {
 
 export interface CompanyConfig {
   nome: string;
-  categoria: string; // ramo de atuação — também define o tema visual (cor + ícone), ver lib/categoryThemes.ts
+  categoria: string; // ramo de atuacao; tambem define o tema visual em lib/categoryThemes.ts
   oferta: Oferta;
   controlaEstoque: boolean;
   metaDiariaVendas?: number;
-  despesasFixas: DespesaFixa[];
+  despesasFixas?: DespesaFixa[];
   relatorio: {
     frequencia: FrequenciaRelatorio;
     porEmail: boolean;
     email?: string;
   };
-  viewPeriod: ViewPeriod; // resumo do Painel Inicial: "hoje" ou "últimos 7 dias"
+  viewPeriod: ViewPeriod;
   onboardingConcluido: boolean;
 }
 
@@ -49,11 +49,11 @@ export interface Venda {
   id: string;
   caixaSessaoId?: string;
   data: string; // ISO date
-  createdAt?: string; // instante ISO usado para ordenar vendas do mesmo dia
+  createdAt?: string;
   descricao: string;
   quantidade: number;
   valorUnitario: number;
-  formaPagamento: FormaPagamento; // 'fiado' também cria uma Conta a receber automaticamente
+  formaPagamento: FormaPagamento;
   produtoId?: string;
   tipoItem?: 'product' | 'service';
 }
@@ -75,14 +75,16 @@ export interface TransacaoFinanceira {
 
 export interface Produto {
   id: string;
-  type: 'product' | 'service';
   nome: string;
-  categoria?: string; // tag livre, ex: "Bebidas", "Doces" — usada nos filtros da tela de Catálogo
+  codigo?: string; // SKU/codigo unico por empresa para produtos de estoque
+  categoria?: string;
+  tipo?: 'produto' | 'servico';
+  type?: 'product' | 'service'; // compatibilidade com telas/relatorios vindos de origin/main
+  quantidade: number;
+  quantidadeMinima: number;
   precoVenda: number;
-  custo?: number; // opcional, para cálculo de margem futuro
-  quantidade?: number; // só para produtos
-  quantidadeMinima?: number; // só para produtos
-  duracao?: string; // só para serviços
+  custo?: number;
+  duracao?: string;
 }
 
 export interface CategoriaProduto {
@@ -103,16 +105,17 @@ export interface Conta {
   valor: number;
   vencimento: string; // ISO date
   quitado: boolean;
-  dataQuitacao?: string; // ISO date — quando a conta foi de fato paga/recebida (preenchido ao dar baixa)
-  quitadoEm?: string; // instante ISO da baixa, para ordenação dentro do mesmo dia
-  origemVendaId?: string; // preenchido quando a conta a receber nasce de uma venda "fiado"
-  clienteId?: string; // preenchido quando a conta a receber está vinculada a um cliente cadastrado
+  dataQuitacao?: string;
+  quitadoEm?: string;
+  origemVendaId?: string;
+  clienteId?: string;
+  despesaFixaId?: string;
 }
 
 export interface LancamentoManual {
   id: string;
   data: string;
-  createdAt?: string; // instante ISO usado para ordenar lançamentos do mesmo dia
+  createdAt?: string;
   tipo: TipoLancamento;
   descricao: string;
   valor: number;
@@ -152,6 +155,7 @@ export interface AppData {
   contas: Conta[];
   lancamentosManuais: LancamentoManual[];
   clientes: Cliente[];
+  despesasFixas: DespesaFixa[];
   transacoes: TransacaoFinanceira[];
   caixaAtual: SessaoCaixa | null;
   fechamentosCaixa: SessaoCaixa[];

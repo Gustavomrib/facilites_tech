@@ -2,21 +2,14 @@
 
 ## Banco PostgreSQL
 
-O schema completo fica em [`server/sql/schema.sql`](server/sql/schema.sql) e e
-aplicado automaticamente pela API na inicializacao. Ele inclui vendas e itens,
-catalogo, clientes, despesas recorrentes, sessoes de caixa, fiado, relatorios,
-indices compostos e Row Level Security por `user_id`.
+O backend atual fica em [`backend`](backend) e usa NestJS + Prisma.
+Configure `DATABASE_URL` a partir de [`backend/.env.example`](backend/.env.example).
 
-Configure `DATABASE_URL` a partir de `server/.env.example`. No painel do Neon,
-copie a URL pooled para essa variavel e mantenha `sslmode=require`. A variavel
-`DATABASE_URL_UNPOOLED` e opcional; quando ausente, o comando de schema usa a
-propria conexao pooled.
-
-Antes de iniciar a aplicacao pela primeira vez, aplique o schema:
+Antes de iniciar a aplicacao pela primeira vez, aplique as migrations:
 
 ```bash
-cd server
-npm run db:schema
+cd backend
+npm run prisma:deploy
 cd ..
 npm run dev
 ```
@@ -29,11 +22,10 @@ segunda execucao mostra qual processo ja esta ativo em vez de escolher outra
 porta silenciosamente.
 
 Por padrao, o Vite encaminha `/api` para `http://localhost:3000`, a mesma porta
-definida no exemplo de `server/.env`.
+definida no exemplo de `backend/.env`.
 
-Em producao, execute `npm run db:schema:prod` como etapa de release depois do
-build. A API nao executa DDL automaticamente em producao, evitando que varias
-instancias concorrentes disputem locks de schema no Neon.
+Em producao, execute `npm run prisma:deploy` no backend como etapa de release
+antes de iniciar a API.
 
 ### Dados de demonstracao
 
@@ -41,7 +33,7 @@ Com `DATABASE_URL` configurada, a seed cria duas contas com produtos, servicos,
 clientes, despesas, sessoes de caixa e vendas a vista/fiado:
 
 ```bash
-cd server
+cd backend
 npm run seed
 ```
 
@@ -57,25 +49,12 @@ Para reiniciar integralmente o banco configurado e recriar os dados de
 demonstracao com o schema atual, use o modo explicito `--reset`:
 
 ```bash
-cd server
+cd backend
 npm run seed -- --reset
 ```
 
 Esse comando remove todas as contas e dados de negocio do banco apontado por
 `DATABASE_URL`; use apenas em desenvolvimento.
 
-Toda rota autenticada que consulta dados de negocio deve usar
-`withTenantTransaction(userId, callback)` de `server/src/db.ts`. O helper define
-`app.current_user_id` somente durante a transacao, requisito para que as policies
-de RLS permitam acesso e para que uma conexao reutilizada pelo pool nao carregue
-o tenant da requisicao anterior.
-
-Venda `fiado` e registrada em `sales` + `credit_sales`, sem entrada em
-`transactions`. Cada recebimento (inclusive parcial) e uma transaction com
-`source = 'pagamento_fiado'`; um trigger atualiza a divida. Assim `daily_balance`
-contabiliza somente dinheiro efetivamente recebido.
-
-No Neon, a connection string usa a role proprietaria apenas para autenticar e
-aplicar schema. Cada operacao de negocio executa `SET LOCAL ROLE
-mnb_app_runtime`, uma role `NOBYPASSRLS`, garantindo que as policies sejam
-aplicadas mesmo quando `neondb_owner` possui `BYPASSRLS`.
+No Neon, use a connection string do banco em `DATABASE_URL` e segredos reais
+para JWT/cookies em ambientes publicados.

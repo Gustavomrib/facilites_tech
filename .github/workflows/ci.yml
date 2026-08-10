@@ -4,6 +4,15 @@ on:
   push:
     branches: [main]
   pull_request:
+    paths:
+      - 'src/**'
+      - 'e2e/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'playwright.config.ts'
+      - 'index.html'
+      - 'vite.config.ts'
+      - '.github/workflows/ci.yml'
 
 jobs:
   build:
@@ -13,10 +22,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
           cache: npm
 
       - run: npm ci
       - run: npm run lint
       - run: npm run build
-      - run: npm test

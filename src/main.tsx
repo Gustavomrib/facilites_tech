@@ -5,7 +5,7 @@ import './index.css';
 import App from './App.tsx';
 import ErrorBoundary from './components/ErrorBoundary.tsx';
 import { AppDataProvider } from './context/AppDataContext.tsx';
-import { AuthProvider } from './context/AuthContext.tsx';
+import { AuthProvider } from './auth/AuthContext.tsx';
 import { initializeTheme } from './lib/theme.ts';
 
 initializeTheme();

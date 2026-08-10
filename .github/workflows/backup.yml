@@ -1,0 +1,52 @@
+name: backup
+
+# Daily database backup: pg_dump against the production DATABASE_URL,
+# gzip-compressed, uploaded as a GitHub Actions artifact. That covers "have a
+# recoverable copy" without inventing cloud storage credentials that don't
+# exist yet — see docs/DEPLOYMENT.md for extending this to off-site (S3/GCS)
+# storage once a provider is chosen. Restore is a manual pull-and-import; the
+# procedure (and evidence it actually works — a real restore drill) is
+# documented in docs/DEPLOYMENT.md.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: backup-production
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: pg_dump production
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify a database is configured
+        run: |
+          if [ -z "${{ secrets.PRODUCTION_DATABASE_URL }}" ]; then
+            echo "::error::PRODUCTION_DATABASE_URL secret not set — nothing to back up. See docs/DEPLOYMENT.md."
+            exit 1
+          fi
+
+      - name: Install postgresql-client
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Run backup
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: |
+          chmod +x scripts/backup-postgres.sh
+          scripts/backup-postgres.sh ./backups
+
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-backup-${{ github.run_id }}
+          path: backups/*.sql.gz
+          # Kept well past any single incident-response window; not a
+          # substitute for real off-site retention — see docs/DEPLOYMENT.md.
+          retention-days: 30

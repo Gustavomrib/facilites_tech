@@ -1,0 +1,150 @@
+name: e2e-pr
+
+# Full-stack PR gate: frontend build/typecheck, then a real backend
+# (Postgres + migrated schema + running Nest server) exercised end-to-end by
+# Playwright through the actual Vite dev server. Nothing here is mocked.
+#
+# This is intentionally separate from backend-ci.yml (backend-only
+# lint/unit/build/jest-e2e) — that workflow is untouched. This one is the
+# only place the frontend build and the browser-driven auth/session/product/
+# sale/fiado/reports flows get validated together.
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'e2e/**'
+      - 'backend/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'playwright.config.ts'
+      - 'index.html'
+      - 'vite.config.ts'
+      - '.github/workflows/e2e-pr.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: e2e-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  frontend-build:
+    name: Frontend build & typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (tsc -b && vite build)
+        run: npm run build
+
+  e2e:
+    name: Playwright E2E (real backend)
+    needs: frontend-build
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mnb
+          POSTGRES_PASSWORD: mnb
+          POSTGRES_DB: meu_negocio_no_bolso
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mnb"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Backend runtime config. Dummy secrets are fine — this Postgres and
+      # this Nest process live only for the duration of this job.
+      NODE_ENV: test
+      DATABASE_URL: postgresql://mnb:mnb@localhost:5432/meu_negocio_no_bolso?schema=public
+      JWT_ACCESS_SECRET: ci-access-secret-please-rotate
+      JWT_REFRESH_SECRET: ci-refresh-secret-please-rotate
+      JWT_ACCESS_EXPIRES_IN: 15m
+      JWT_REFRESH_EXPIRES_IN: 7d
+      COOKIE_SECRET: ci-cookie-secret
+      CORS_ORIGIN: http://localhost:5173
+      PORT: 3000
+      # Read by the frontend (Vite envPrefix "VITE_") and by e2e/helpers/api.ts.
+      VITE_API_BASE: http://localhost:3000/api
+      E2E_API_BASE: http://localhost:3000/api
+      CI: 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            backend/package-lock.json
+
+      - name: Install frontend + e2e dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Prisma generate
+        working-directory: backend
+        run: npm run prisma:generate
+
+      - name: Apply migrations
+        working-directory: backend
+        run: npm run prisma:deploy
+
+      - name: Build backend
+        working-directory: backend
+        run: npm run build
+
+      - name: Start backend
+        working-directory: backend
+        # Backgrounded and disowned so it survives past this step; the job's
+        # VM is torn down at job end, so there's no explicit stop step.
+        run: |
+          nohup node dist/main.js > "$GITHUB_WORKSPACE/backend.log" 2>&1 &
+          disown
+
+      - name: Wait for backend readiness
+        run: |
+          chmod +x scripts/wait-for-http.sh
+          scripts/wait-for-http.sh http://localhost:3000/api/health/ready 30 2 backend.log
+
+      - name: Run Playwright E2E suite
+        run: npm run test:e2e
+
+      - name: Show backend log on failure
+        if: failure()
+        run: cat backend.log || true
+
+      - name: Upload Playwright report & traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14
+          if-no-files-found: ignore

@@ -10,13 +10,12 @@ export function formatDate(iso: string): string {
 }
 
 export function todayISO(): string {
-  // usa os componentes locais em vez de toISOString() (que é sempre UTC) —
-  // senão, a partir de ~21h no horário de Brasília (UTC-3), a data já teria
-  // virado para o dia seguinte e lançamentos seriam gravados na data errada
+  // UTC is the app's date source of truth, matching the backend queries and
+  // date-only values stored in Postgres.
   const d = new Date();
-  const ano = d.getFullYear();
-  const mes = String(d.getMonth() + 1).padStart(2, '0');
-  const dia = String(d.getDate()).padStart(2, '0');
+  const ano = d.getUTCFullYear();
+  const mes = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dia = String(d.getUTCDate()).padStart(2, '0');
   return `${ano}-${mes}-${dia}`;
 }
 

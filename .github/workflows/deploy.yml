@@ -1,0 +1,98 @@
+name: deploy
+
+# Builds the backend Docker image once, pushes it to GHCR tagged with the
+# commit SHA (immutable — this exact tag is what rollback.yml redeploys),
+# then — only if a deploy target is configured — pulls that same tag onto
+# the production host and restarts it. See docs/DEPLOYMENT.md.
+#
+# The build/push half always runs; the SSH deploy half is a no-op with a
+# warning if DEPLOY_HOST isn't set yet, so this workflow is safe to merge
+# before a target host is chosen.
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to build and deploy (defaults to the triggering ref)'
+        required: false
+        type: string
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    name: Build & push image
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Compute image reference
+        id: image
+        run: |
+          repo_lower=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "image=ghcr.io/${repo_lower}-backend:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "repo_lower=${repo_lower}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3.9.0
+
+      - uses: docker/login-action@v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6.9.0
+        with:
+          context: backend
+          file: backend/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.image.outputs.image }}
+            ghcr.io/${{ steps.image.outputs.repo_lower }}-backend:latest
+
+  deploy:
+    name: Deploy to production host
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check deploy target is configured
+        id: check
+        run: |
+          if [ -z "${{ secrets.DEPLOY_HOST }}" ]; then
+            echo "::warning::DEPLOY_HOST secret not set — image ${{ needs.build-and-push.outputs.image }} was built and pushed, but no deploy target is configured yet. See docs/DEPLOYMENT.md to wire one up."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy over SSH (docker compose pull + up -d)
+        if: steps.check.outputs.configured == 'true'
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.DEPLOY_PATH }}"
+            ./scripts/remote-deploy.sh "${{ needs.build-and-push.outputs.image }}"
+
+      - name: Deploy summary
+        if: always()
+        run: |
+          echo "Image: ${{ needs.build-and-push.outputs.image }}"
+          if [ "${{ steps.check.outputs.configured }}" = "true" ]; then
+            echo "Deployed and health-checked on ${{ secrets.DEPLOY_HOST }}."
+          else
+            echo "Not deployed — DEPLOY_HOST not configured. Image is available in GHCR for a manual deploy."
+          fi
+          echo "To roll back to this exact build later, use rollback.yml with image tag: ${{ github.sha }}"
