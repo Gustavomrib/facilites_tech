@@ -7,8 +7,8 @@ const services = [
     name: 'BACK',
     port: 3000,
     args: ['run', 'dev:api'],
-    url: 'http://localhost:3000/api/health',
-    matches: async (response) => response.ok && (await response.json()).ok === true,
+    url: 'http://localhost:3000/api/health/ready',
+    matches: async (response) => response.ok && (await response.json()).status === 'ok',
   },
   {
     name: 'FRONT',
@@ -93,7 +93,7 @@ console.log(`
 CaixaFácil — ambiente de desenvolvimento
   Front-end: http://localhost:5173
   API:       http://localhost:3000
-  Health:    http://localhost:3000/api/health
+  Health:    http://localhost:3000/api/health/ready
 
 ${reusableServices.size > 0
     ? 'Pressione Ctrl+C para encerrar os serviços iniciados neste terminal; os já ativos serão mantidos.'
@@ -123,7 +123,15 @@ if (servicesToStart.length === 0) {
 }
 
 function startService(service) {
-  const child = spawn(npmCommand, service.args, {
+  const spawnTarget =
+    process.platform === 'win32'
+      ? {
+          command: process.env.ComSpec ?? 'cmd.exe',
+          args: ['/d', '/s', '/c', [npmCommand, ...service.args].join(' ')],
+        }
+      : { command: npmCommand, args: service.args };
+
+  const child = spawn(spawnTarget.command, spawnTarget.args, {
     cwd: process.cwd(),
     env: process.env,
     stdio: ['inherit', 'pipe', 'pipe'],
